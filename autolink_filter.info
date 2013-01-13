@@ -1,0 +1,13 @@
+name = Automatic linking filter
+description = Filter that uses taxonomy vocabularies to automatically link keywords found in content.
+core = 7.x
+package = Input filters
+configure = admin/config/content/formats
+
+dependencies[] = "simplehtmldom"
+
+version = "7.x-1.2"
+core = "7.x"
+project = "autolink_filter"
+datestamp = "1321824642"
+

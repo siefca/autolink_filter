@@ -1,0 +1,246 @@
+<?php
+
+/**
+* @file
+* autolink_filter.module
+* 
+* @author Paweł Wilk
+* @link http://github.com/siefca/autolink_filter
+*
+* Provides automatic linking filter for input formats.
+*/
+
+/**
+* Gets vocabularies as an array.
+*/
+function _autolink_filter_vocab_array() {
+  $checklist_vocab_array = array();
+  $vocabulary = taxonomy_get_vocabularies();
+  foreach ($vocabulary as $item) {
+    $checklist_vocab_array[$item->vid] = $item->name;
+  }
+  unset($item);
+  return $checklist_vocab_array;
+}
+
+/**
+* Implements hook_init().
+*/
+function autolink_filter_init() {
+  $path = drupal_get_path('module', 'autolink_filter');
+}
+
+/**
+* Implements hook_filter_info().
+*/
+function autolink_filter_filter_info() {
+  $filters = array();
+  $excluded_tags = 'a link pre h1 h2 h3 h4 h5 h6 h7 code pre address';
+  $filters['autolink_filter'] = array(
+    'title' => t('Automatically link keywords from vocabularies'),
+    'process callback' => '_autolink_filter_process_filter',
+    'settings callback' => '_autolink_filter_settings',
+    'weight' => 50,
+    'default settings' => array(
+      'excluded_tags' => $excluded_tags,
+      'vocabularies'  => _autolink_filter_vocab_array(),
+    )
+  );
+  return $filters;
+}
+
+/**
+* Filter process callback.
+*/
+function _autolink_filter_process_filter($text, $filter) {
+  $vocs = $filter->settings['vocabularies'];
+  $excl = $filter->settings['excluded_tags'];
+  if (!isset($vocs) || empty($vocs)) { return $text; }
+  if (!isset($excl)) { $excl = ""; }
+  $parser = new AutolinkFilterParser($text, $vocs, $excl);
+  $r = $parser->parse();
+  $parser->clear();
+  unset($vocs);
+  return $r;
+}
+
+/**
+* Adds query taxonomy_leaf tag.
+*/
+function autolink_filter_query_taxonomy_leaf_alter(QueryAlterableInterface $query) {
+  # fixme!!
+  #$tables =& $query->getTables();
+  #$query
+  #  ->join('taxonomy_term_hierarchy', 'parents', 'parents.parent = ' . $tables['taxonomy_term_data']['alias'] . '.tid');
+  #$query->condition('parents.parent', 'NULL', '=');
+  #$tables['parents']['join type'] = 'LEFT OUTER';
+  //dpm($query);  
+}
+
+/**
+* Parser class
+*/
+class AutolinkFilterParser {
+  private $src;         // source text
+  private $html;        // HTML DOM
+  private $min_length;  // minimal length of parsed word
+  private $max_length;  // maximal length of parsed word
+  private $leafs_only;  // use only taxonomy terms that are not parents for other terms
+  private $taxonomy;    // taxonomy words
+  private $changed;     // internal change marker
+
+  function __construct($src, $vocs, $excluded_tags = '', $excluded_words = '', $min_length = 0,
+                       $max_length = 0, $leafs_only = TRUE) {
+
+    if (!is_numeric($min_length) || $min_length < 0) { $min_length = 0; }
+    if (!is_numeric($max_length) || $max_length < 0) { $max_length = 0; }
+    if ($min_length > 32)  { $min_length = 32; }
+    if ($max_length === 0 || $max_length > 1024) { $max_length = 1024; }
+
+    $this->src            = $src;
+    $this->taxonomy       = array();
+    $this->vocabularies   = array();
+    $this->leafs_only     = $leafs_only;
+    $this->min_length     = $min_length;
+    $this->max_length     = $max_length;
+    $this->excluded_tags  = $this->extract_words_as_keys(drupal_strtolower($excluded_tags));
+    $this->excluded_words = $this->extract_words_as_keys($excluded_words, $this->min_length, $this->max_length);
+
+    foreach($vocs as $vid => $name) {
+      if ($name) {
+        $this->vocabularies[] = $vid;
+      }
+    }
+
+    $this->load_taxonomy();
+    //dpm($this->taxonomy);
+  }
+
+  private function load_taxonomy() {
+    $query = new EntityFieldQuery;
+    $terms = $query
+      ->entityCondition('entity_type', 'taxonomy_term')
+      ->propertyCondition('vid', $this->vocabularies, 'IN')
+      ->propertyOrderBy('weight')
+      ->addTag('taxonomy_leaf')  //->addTag('taxonomy_tooltips')
+      ->execute();
+    if (isset($terms['taxonomy_term'])) {
+      $terms = entity_load('taxonomy_term', array_keys($terms['taxonomy_term']));
+      //dpm($terms);
+      foreach($terms as $term) {
+        if (isset($term->name)) {
+          $name = $term->name;
+          $name_length = drupal_strlen($name);
+          if ($name_length < $this->min_length || $name_length > $this->max_length ||
+              array_key_exists($name, $this->excluded_words) ||
+              array_key_exists($name, $this->taxonomy)) { continue; }
+          $tip = isset($term->tooltip) ? $term->tooltip : '';
+          $this->taxonomy[$name] = array($term->tid, $term->description, $tip);
+        }
+      }
+    }
+    unset($terms, $query, $term, $tip, $name, $name_length);
+  }
+
+  private function extract_words($text, $minlength = 0, $maxlength = 0) {
+    static $re_wordsplit = '/[^\pL\p{Pc}\p{Pd}\pN\/]+/u';
+    if (($minlength + $maxlength) === 0) {
+      return array_filter(preg_split($re_wordsplit, $text));
+    }
+    else {
+      $r = $this->extract_words($text);
+      foreach ($r as $k => $word) {
+        $l = drupal_strlen($word);
+        if ($l < $minlength || $l > $maxlength) {
+          unset($r[$k]);
+        }
+      }
+      unset($k, $word);
+      return $r;
+    }
+  }
+
+  private function extract_words_as_keys($text, $minl = 0, $maxl = 0) {
+    return array_flip($this->extract_words($text, $minl, $maxl));
+  }
+
+  private function extract_words_from_text($text) {
+    return array_flip($this->extract_words($text), $this->min_length, $this->max_length);
+  }
+
+  private function in_excluded_tag(& $el) {
+    if (!isset($el->parent)) { return FALSE; }
+    if (array_key_exists($el->parent->tag, $this->excluded_tags)) { return TRUE; }
+    return $this->in_excluded_tag($el->parent);
+  }
+
+  public function parse() {
+    static $re_words = '/[\pL\p{Pc}\p{Pd}\pN\/]+/u';
+    $this->changed = FALSE;
+    $this->html = new simple_html_dom();
+    $this->html->load($this->src, true, false);
+    foreach ($this->html->find('text') as $fragment) {
+      if (!$this->in_excluded_tag($fragment)) {
+        $fragment->innertext = preg_replace_callback($re_words, array(&$this, 'parse_fragment'), $fragment->innertext);
+      }
+    }
+    $out = $this->html->outertext;
+    $this->html->clear();
+    unset($this->html, $fragment, $vid, $vname);
+    return $out;
+  }
+
+  private function parse_fragment($matches) {
+    if (!isset($matches[0])) { return ''; }
+    $word = $matches[0];
+    if (array_key_exists($word, $this->taxonomy)) {
+      list($tid, $description, $tip) = $this->taxonomy[$word];
+      return '<a href="' . url('taxonomy/term/' . $tid) . '" title="' . $tip . '" class="taxonomy-autolink">' .
+             $word . '</a>';
+    }
+    else {
+      return $word;
+    }
+  }
+
+  public function clear() {
+    unset($this->src, $this->query, $this->taxonomy);
+  }
+}
+
+/**
+ * Settings callback.
+ */
+function _autolink_filter_settings($form, &$form_state, $filter, $format, $defaults, $filters) {
+  $filter->settings += $defaults;
+  return array(
+    'reminder' => array(
+      '#type'   => 'item',
+      '#title'  => t('In most cases, Autolink Filter should be the <em>last</em> filter in the &ldquo;Filter processing order&rdquo; list.'),
+      '#weight' => -10,
+    ),
+    'excluded_tags' => array(
+      '#type'           => 'textfield',
+      '#title'          => t('HTML tags excluded from processing.'),
+      '#default_value'  => $filter->settings['excluded_tags'],
+      '#size'           => '63',
+      '#weight'         => -5,
+      '#description'    => t('Enter HTML tag names (separated by spaces) which content (contained within) will not be processed.'),
+    ),
+    'vocabularies' => array(
+      '#type'           => 'checkboxes',
+      '#title'          => t('Vocabularies'),
+      '#position'       => 'left',
+      '#options'        => _autolink_filter_vocab_array(),
+      '#default_value'  => $filter->settings['vocabularies'],
+      '#description'    => t('Select taxonomy vocabularies used to automatically link keywords.'),
+    )
+  );
+}
+
+/**
+ * Delete unneeded things after uninstalling.
+ */
+function autolink_filter_delete_all() {
+  cache_clear_all('*', 'cache_filter');
+}

@@ -1,0 +1,29 @@
+<?php
+/**
+ * @file
+ * Update and install functions for FileField Sources.
+ */
+
+/**
+ * Implementation of hook_install().
+ */
+function autolink_filter_install() {
+  db_query("UPDATE {system} SET weight = 50 WHERE type = 'module' AND name = 'autolink_filter'");
+}
+
+/**
+ * Implementation of hook_uninstall().
+ */
+function autolink_filter_uninstall() {
+  drupal_load('module', 'autolink_filter');
+  autolink_filter_delete_all();
+}
+
+/**
+ * Set the module weight.
+ */
+function autolink_filter_update_7100() {
+  db_query("UPDATE {system} SET weight = 50 WHERE type = 'module' AND name = 'autolink_filter'");
+}
+
+
