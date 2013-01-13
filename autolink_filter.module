@@ -35,15 +35,18 @@ function autolink_filter_init() {
 */
 function autolink_filter_filter_info() {
   $filters = array();
-  $excluded_tags = 'a link pre h1 h2 h3 h4 h5 h6 h7 code pre address';
+  $excluded_tags  = 'a link pre h1 h2 h3 h4 h5 h6 h7 code pre address';
+  $excluded_words = 'or of because and but no yes though because they i you he she it since are were have had been m very' . 
+                    'less also to too then when';
   $filters['autolink_filter'] = array(
     'title' => t('Automatically link keywords from vocabularies'),
-    'process callback' => '_autolink_filter_process_filter',
+    'process callback'  => '_autolink_filter_process_filter',
     'settings callback' => '_autolink_filter_settings',
     'weight' => 50,
     'default settings' => array(
-      'excluded_tags' => $excluded_tags,
-      'vocabularies'  => _autolink_filter_vocab_array(),
+      'excluded_tags'   => $excluded_tags,
+      'excluded_words'  => $excluded_words,
+      'vocabularies'    => _autolink_filter_vocab_array(),
     )
   );
   return $filters;
@@ -54,13 +57,16 @@ function autolink_filter_filter_info() {
 */
 function _autolink_filter_process_filter($text, $filter) {
   $vocs = $filter->settings['vocabularies'];
-  $excl = $filter->settings['excluded_tags'];
+  $excl_tags = $filter->settings['excluded_tags'];
+  $excl_words = $filter->settings['excluded_words'];
+  $min = 0;
+  $max = 0; // fixme!
   if (!isset($vocs) || empty($vocs)) { return $text; }
   if (!isset($excl)) { $excl = ""; }
-  $parser = new AutolinkFilterParser($text, $vocs, $excl);
+  $parser = new AutolinkFilterParser($text, $vocs, $excl_tags, $excl_words, $min, $max);
   $r = $parser->parse();
   $parser->clear();
-  unset($vocs);
+  unset($vocs, $excl_tags, $excl_words);
   return $r;
 }
 
@@ -68,13 +74,11 @@ function _autolink_filter_process_filter($text, $filter) {
 * Adds query taxonomy_leaf tag.
 */
 function autolink_filter_query_taxonomy_leaf_alter(QueryAlterableInterface $query) {
-  # fixme!!
-  #$tables =& $query->getTables();
-  #$query
-  #  ->join('taxonomy_term_hierarchy', 'parents', 'parents.parent = ' . $tables['taxonomy_term_data']['alias'] . '.tid');
-  #$query->condition('parents.parent', 'NULL', '=');
-  #$tables['parents']['join type'] = 'LEFT OUTER';
-  //dpm($query);  
+  $tables =& $query->getTables();
+  $query
+    ->leftJoin('taxonomy_term_hierarchy', 'parents', 'parents.parent = ' . $tables['taxonomy_term_data']['alias'] . '.tid');
+  $query
+    ->isNull('parents.parent');  
 }
 
 /**
@@ -85,12 +89,13 @@ class AutolinkFilterParser {
   private $html;        // HTML DOM
   private $min_length;  // minimal length of parsed word
   private $max_length;  // maximal length of parsed word
-  private $leafs_only;  // use only taxonomy terms that are not parents for other terms
+  private $leaves_only; // use only taxonomy terms that are not parents of other terms
   private $taxonomy;    // taxonomy words
   private $changed;     // internal change marker
+  private $used_tips;   // used term ID-s
 
   function __construct($src, $vocs, $excluded_tags = '', $excluded_words = '', $min_length = 0,
-                       $max_length = 0, $leafs_only = TRUE) {
+                       $max_length = 0, $leaves_only = TRUE) {
 
     if (!is_numeric($min_length) || $min_length < 0) { $min_length = 0; }
     if (!is_numeric($max_length) || $max_length < 0) { $max_length = 0; }
@@ -100,7 +105,7 @@ class AutolinkFilterParser {
     $this->src            = $src;
     $this->taxonomy       = array();
     $this->vocabularies   = array();
-    $this->leafs_only     = $leafs_only;
+    $this->leaves_only    = $leaves_only;
     $this->min_length     = $min_length;
     $this->max_length     = $max_length;
     $this->excluded_tags  = $this->extract_words_as_keys(drupal_strtolower($excluded_tags));
@@ -118,12 +123,12 @@ class AutolinkFilterParser {
 
   private function load_taxonomy() {
     $query = new EntityFieldQuery;
-    $terms = $query
+    $query
       ->entityCondition('entity_type', 'taxonomy_term')
       ->propertyCondition('vid', $this->vocabularies, 'IN')
-      ->propertyOrderBy('weight')
-      ->addTag('taxonomy_leaf')  //->addTag('taxonomy_tooltips')
-      ->execute();
+      ->propertyOrderBy('weight');
+    if ($this->leaves_only) { $query->addTag('taxonomy_leaf'); }
+    $terms = $query->execute();
     if (isset($terms['taxonomy_term'])) {
       $terms = entity_load('taxonomy_term', array_keys($terms['taxonomy_term']));
       //dpm($terms);
@@ -135,7 +140,7 @@ class AutolinkFilterParser {
               array_key_exists($name, $this->excluded_words) ||
               array_key_exists($name, $this->taxonomy)) { continue; }
           $tip = isset($term->tooltip) ? $term->tooltip : '';
-          $this->taxonomy[$name] = array($term->tid, $term->description, $tip);
+          $this->taxonomy[$name] = array($term->tid, $tip);
         }
       }
     }
@@ -177,6 +182,7 @@ class AutolinkFilterParser {
   public function parse() {
     static $re_words = '/[\pL\p{Pc}\p{Pd}\pN\/]+/u';
     $this->changed = FALSE;
+    $this->used_tips = array();
     $this->html = new simple_html_dom();
     $this->html->load($this->src, true, false);
     foreach ($this->html->find('text') as $fragment) {
@@ -184,7 +190,7 @@ class AutolinkFilterParser {
         $fragment->innertext = preg_replace_callback($re_words, array(&$this, 'parse_fragment'), $fragment->innertext);
       }
     }
-    $out = $this->html->outertext;
+    $out = $this->changed ? $this->html->outertext . $this->generate_tooltips() : $this->src;
     $this->html->clear();
     unset($this->html, $fragment, $vid, $vname);
     return $out;
@@ -194,17 +200,36 @@ class AutolinkFilterParser {
     if (!isset($matches[0])) { return ''; }
     $word = $matches[0];
     if (array_key_exists($word, $this->taxonomy)) {
-      list($tid, $description, $tip) = $this->taxonomy[$word];
-      return '<a href="' . url('taxonomy/term/' . $tid) . '" title="' . $tip . '" class="taxonomy-autolink">' .
-             $word . '</a>';
+      if (!$this->changed) { $this->changed = TRUE; }
+      list($tid, $tip) = $this->taxonomy[$word];
+      $tiprefstring = '';
+      if (!empty($tip)) {
+        if (!array_key_exists($tid, $this->used_tips)) {
+          $this->used_tips[$word] = $tid;
+        }
+        $tiprefstring = 'id="tooltip-ref-' . $tid . '"';
+      }
+      return '<a href="' . url('taxonomy/term/' . $tid) . '" title="' . $word . '" ' .
+             'class="taxonomy-autolink"' . $tiprefstring . '>' . $word . '</a>';
     }
     else {
       return $word;
     }
   }
 
+  private function generate_tooltips() {
+    $r = "\n" . '<!-- tooltips -->' . "\n";
+    $r .= '<div id="tooltips-container" style="display:none;">' . "\n";
+    $r .= '<p>Tooltips:</p>' . "\n";
+    foreach($this->used_tips as $name => $tid) {
+      $r .= '  <div id="tooltip-def-' . $tid . '">' . $this->taxonomy[$name][1] . '</div>' . "\n";
+    }
+    $r .= "</div>\n<!--eof tooltips -->\n";
+    return $r;
+  }
+
   public function clear() {
-    unset($this->src, $this->query, $this->taxonomy);
+    unset($this->src, $this->query, $this->taxonomy, $this->used_tips);
   }
 }
 
@@ -225,7 +250,15 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
       '#default_value'  => $filter->settings['excluded_tags'],
       '#size'           => '63',
       '#weight'         => -5,
-      '#description'    => t('Enter HTML tag names (separated by spaces) which content (contained within) will not be processed.'),
+      '#description'    => t('Enter HTML tag names (separated by spaces and/or commas) which content (contained within) will not be processed.'),
+    ),
+     'excluded_words' => array(
+        '#type'           => 'textfield',
+        '#title'          => t('Words excluded from processing.'),
+        '#default_value'  => $filter->settings['excluded_words'],
+        '#size'           => '63',
+        '#weight'         => -2,
+        '#description'    => t('Enter words (separated by spaces and/or commas) which won\'t be processed.'),
     ),
     'vocabularies' => array(
       '#type'           => 'checkboxes',
