@@ -198,9 +198,10 @@ class AutolinkFilterParser {
   }
 
   private function load_taxonomy() {
-    $cache_key = '-' . $this->min_length      . '-'         . $this->max_length     .
-                 '-' . $this->leaves_only     . '-'         . $this->selected_only  .
-                 '-' . implode(':', $this->excluded_words)  . '-' . implode(':', $this->vocabularies);
+    $cache_key = '-' . $this->min_length      . '-' . $this->max_length     .
+                 '-' . $this->leaves_only     . '-' . $this->selected_only  .
+                 '-' . $this->use_tooltips    . '-' . implode(':', $this->excluded_words)  .
+                 '-' . implode(':', $this->vocabularies);
 
     if (self::$taxonomy_sum === $cache_key) { return; }
     self::$taxonomy = array();
@@ -234,10 +235,19 @@ class AutolinkFilterParser {
       foreach($tidgroups as $tids) {
         $terms = entity_load('taxonomy_term', $tids);
         if (!isset($terms)) { continue; }
-        foreach($terms as $term) {
-          if (isset($term->name)) {
-            $tip = ($this->use_tooltips === TRUE && isset($term->tooltip)) ? $term->tooltip : '';
-            self::$taxonomy[$term->name] = array($term->tid, $tip);
+        if ($this->use_tooltips === TRUE) {
+          foreach($terms as $term) {
+            if (isset($term->name)) {
+              $tip = isset($term->tooltip) ? $term->tooltip : '';
+              self::$taxonomy[$term->name] = array($term->tid, $tip);
+            }
+          }
+        }
+        else {
+          foreach($terms as $term) {
+            if (isset($term->name)) {
+              self::$taxonomy[$term->name] = array($term->tid, '');
+            }
           }
         }
       }
@@ -289,7 +299,14 @@ class AutolinkFilterParser {
         $fragment->innertext = preg_replace_callback($re_words, array(&$this, 'parse_fragment'), $fragment->innertext);
       }
     }
-    $out = $this->changed ? $this->html->outertext . $this->generate_tooltips() : $this->src;
+    if ($this->changed) {
+      $ttips = $this->use_tooltips ? $this->generate_tooltips() : '';
+      $out = $this->html->outertext . $ttips;
+      unset($ttips);
+    }
+    else {
+      $out = $this->src;
+    }
     $this->html->clear();
     unset($this->html, $fragment, $vid, $vname);
     return $out;
@@ -317,7 +334,6 @@ class AutolinkFilterParser {
   }
 
   private function generate_tooltips() {
-    if (!$this->use_tooltips) { return ''; }
     $r = "\n" . '<!-- tooltips -->' . "\n";
     $r .= '<div id="tooltips-container" style="display:none;">' . "\n";
     $r .= '<p>Tooltips:</p>' . "\n";
