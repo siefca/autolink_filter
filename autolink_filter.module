@@ -34,36 +34,56 @@ function autolink_filter_init() {
 * Implements hook_filter_info().
 */
 function autolink_filter_filter_info() {
-  $filters = array();
+  $filters        = array();
   $excluded_tags  = 'a link pre h1 h2 h3 h4 h5 h6 h7 code pre address';
   $excluded_words = 'or of because and but no yes though because they i you he she it since are were have had been m very' . 
                     'less also to too then when';
   $filters['autolink_filter'] = array(
-    'title' => t('Automatically link keywords from vocabularies'),
+    'title'             => t('Automatically link keywords from vocabularies'),
     'process callback'  => '_autolink_filter_process_filter',
     'settings callback' => '_autolink_filter_settings',
-    'weight' => 50,
-    'default settings' => array(
+    'weight'            => 50,
+    'default settings'  => array(
       'excluded_tags'   => $excluded_tags,
       'excluded_words'  => $excluded_words,
       'vocabularies'    => _autolink_filter_vocab_array(),
+      'processing_options' => array('use_tooltips'),
     )
   );
   return $filters;
 }
 
 /**
+* Renders processing options array.
+*/
+function _autolink_processing_options_array() {
+  return array(
+    'leaves_only'   => t('Only use terms that are the last children (leaves) of a taxonomy tree.'),
+    'selected_only' => t('Only use terms that have <code>field_autolink</code> boolean field set.'),
+    'use_tooltips'  => t('Generate tooltips (uses <code>field_autolink_tooltip</code> text fields from taxonomy terms).'),
+  );
+}
+
+/**
 * Filter process callback.
 */
 function _autolink_filter_process_filter($text, $filter) {
-  $vocs = $filter->settings['vocabularies'];
-  $excl_tags = $filter->settings['excluded_tags'];
-  $excl_words = $filter->settings['excluded_words'];
-  $min = 0;
+  $vocs               = $filter->settings['vocabularies'];
+  $excl_tags          = $filter->settings['excluded_tags'];
+  $excl_words         = $filter->settings['excluded_words'];
+  $processing_options = array_filter($filter->settings['processing_options']);
+  $leaves_only        = array_key_exists('leaves_only',   $processing_options);
+  $selected_only      = array_key_exists('selected_only', $processing_options);
+  $use_tooltips       = array_key_exists('use_tooltips',  $processing_options);
+  $min = 3;
   $max = 0; // fixme!
+
   if (!isset($vocs) || empty($vocs)) { return $text; }
   if (!isset($excl)) { $excl = ""; }
-  $parser = new AutolinkFilterParser($text, $vocs, $excl_tags, $excl_words, $min, $max);
+
+  $parser = new AutolinkFilterParser($text, $vocs, $excl_tags, $excl_words, $min, $max,
+                                     $leaves_only, $use_tooltips, $selected_only);
+
   $r = $parser->parse();
   $parser->clear();
   unset($vocs, $excl_tags, $excl_words);
@@ -71,9 +91,30 @@ function _autolink_filter_process_filter($text, $filter) {
 }
 
 /**
-* Adds query taxonomy_leaf tag.
+* Adds query autolink_sieve tag for filtering by explicite boolean marker
+* (if it's not 0 and not null).
 */
-function autolink_filter_query_taxonomy_leaf_alter(QueryAlterableInterface $query) {
+function autolink_filter_query_autolink_sieve_alter(QueryAlterableInterface $query) {
+  $sieve_field = $query->getMetaData('sieve_field');
+  if ($sieve_field === NULL) { return; }
+  $sieve_table = 'field_data_' . $sieve_field;
+  if(!db_table_exists($sieve_table)) { return; }
+  $sieve_value_field = $sieve_field . '_value';
+  if(!db_field_exists($sieve_table, $sieve_value_field))  { return; }
+  if(!db_field_exists($sieve_table, 'entity_id'))         { return; }
+  $tables =& $query->getTables();
+  $query
+    ->join($sieve_table, 'enabled', 'enabled.entity_id = ' . $tables['taxonomy_term_data']['alias'] . '.tid');
+  $query
+    ->isNotNull('enabled.' . $sieve_value_field);
+  $query
+    ->condition('enabled.' . $sieve_value_field, 0, '<>');
+}
+
+/**
+* Adds query autolink_leaves tag for using the last children of taxonomy tree.
+*/
+function autolink_filter_query_autolink_leaves_alter(QueryAlterableInterface $query) {
   $tables =& $query->getTables();
   $query
     ->leftJoin('taxonomy_term_hierarchy', 'parents', 'parents.parent = ' . $tables['taxonomy_term_data']['alias'] . '.tid');
@@ -82,25 +123,57 @@ function autolink_filter_query_taxonomy_leaf_alter(QueryAlterableInterface $quer
 }
 
 /**
+* Adds query autolink_group_by_name tag for removing duplicated names when multiple matches occur.
+*/
+function autolink_filter_query_autolink_group_by_name_alter(QueryAlterableInterface $query) {
+  $tables =& $query->getTables();
+  $query
+    ->groupBy($tables['taxonomy_term_data']['alias'] . '.name');  
+
+  //dpm($query->__toString());
+}
+
+/**
+* Adds query taxonomy_name_length tag for filtering out names that have unwanted lengths.
+*/
+function autolink_filter_query_taxonomy_name_length_alter(QueryAlterableInterface $query) {
+  static $fn = NULL;
+  if ($fn === NULL) {
+    $fn = (_autolink_filter_read_property($query, 'connection')->databaseType() == 'sqlite') ? 'LENGTH' : 'CHAR_LENGTH';
+  }
+  $tables =& $query->getTables();
+  $tname = $tables['taxonomy_term_data']['alias'];
+  $min = $query->getMetaData('name_length_min');
+  $max = $query->getMetaData('name_length_max');
+  if ($min === NULL || $max === NULL || !is_numeric($min) || !is_numeric($max)) { return; }
+  $query
+    ->where($fn . '(' . $tname . '.name) >= ' . $min);
+  $query
+    ->where($fn . '(' . $tname . '.name) <= ' . $max);
+}
+
+/**
 * Parser class
 */
 class AutolinkFilterParser {
-  private $src;         // source text
-  private $html;        // HTML DOM
-  private $min_length;  // minimal length of parsed word
-  private $max_length;  // maximal length of parsed word
-  private $leaves_only; // use only taxonomy terms that are not parents of other terms
-  private $taxonomy;    // taxonomy words
-  private $changed;     // internal change marker
-  private $used_tips;   // used term ID-s
+  private $src;           // source text
+  private $html;          // HTML DOM
+  private $min_length;    // minimal length of parsed word
+  private $max_length;    // maximal length of parsed word
+  private $leaves_only;   // use only taxonomy terms that are not parents of other terms
+  private $use_tooltips;  // use tooltips
+  private $selected_only; // require field_autolink to be true
+  private $taxonomy;      // taxonomy words
+  private $changed;       // internal change marker
+  private $used_tips;     // used term ID-s
 
   function __construct($src, $vocs, $excluded_tags = '', $excluded_words = '', $min_length = 0,
-                       $max_length = 0, $leaves_only = TRUE) {
+                       $max_length = 0, $leaves_only = FALSE, $use_tooltips = TRUE, $selected_only = FALSE) {
 
     if (!is_numeric($min_length) || $min_length < 0) { $min_length = 0; }
     if (!is_numeric($max_length) || $max_length < 0) { $max_length = 0; }
     if ($min_length > 32)  { $min_length = 32; }
-    if ($max_length === 0 || $max_length > 1024) { $max_length = 1024; }
+    if ($max_length == 0 || $max_length > 1024) { $max_length = 1024; }
 
     $this->src            = $src;
     $this->taxonomy       = array();
@@ -108,8 +181,10 @@ class AutolinkFilterParser {
     $this->leaves_only    = $leaves_only;
     $this->min_length     = $min_length;
     $this->max_length     = $max_length;
+    $this->use_tooltips   = $use_tooltips;
+    $this->selected_only  = $selected_only;
     $this->excluded_tags  = $this->extract_words_as_keys(drupal_strtolower($excluded_tags));
-    $this->excluded_words = $this->extract_words_as_keys($excluded_words, $this->min_length, $this->max_length);
+    $this->excluded_words = $this->extract_words($excluded_words, $this->min_length, $this->max_length);
 
     foreach($vocs as $vid => $name) {
       if ($name) {
@@ -118,7 +193,6 @@ class AutolinkFilterParser {
     }
 
     $this->load_taxonomy();
-    //dpm($this->taxonomy);
   }
 
   private function load_taxonomy() {
@@ -126,21 +200,32 @@ class AutolinkFilterParser {
     $query
       ->entityCondition('entity_type', 'taxonomy_term')
       ->propertyCondition('vid', $this->vocabularies, 'IN')
-      ->propertyOrderBy('weight');
-    if ($this->leaves_only) { $query->addTag('taxonomy_leaf'); }
-    $terms = $query->execute();
+      ->propertyCondition('name', $this->excluded_words, 'NOT IN')
+      ->propertyOrderBy('weight')
+      ->addMetaData('name_length_min', $this->min_length)
+      ->addMetaData('name_length_max', $this->max_length)
+      ->addTag('taxonomy_name_length');
+
+    if ($this->selected_only) {
+      $query
+        ->addMetaData('sieve_field', 'field_autolink')
+        ->addTag('autolink_sieve');
+    }
+
+    if ($this->leaves_only) {
+      $query->addTag('autolink_leaves');
+    }
+
+    $terms = $query
+      ->addTag('autolink_group_by_name')
+      ->execute();
+
     if (isset($terms['taxonomy_term'])) {
       $terms = entity_load('taxonomy_term', array_keys($terms['taxonomy_term']));
-      //dpm($terms);
       foreach($terms as $term) {
         if (isset($term->name)) {
-          $name = $term->name;
-          $name_length = drupal_strlen($name);
-          if ($name_length < $this->min_length || $name_length > $this->max_length ||
-              array_key_exists($name, $this->excluded_words) ||
-              array_key_exists($name, $this->taxonomy)) { continue; }
           $tip = isset($term->tooltip) ? $term->tooltip : '';
-          $this->taxonomy[$name] = array($term->tid, $tip);
+          $this->taxonomy[$term->name] = array($term->tid, $tip);
         }
       }
     }
@@ -238,26 +323,36 @@ class AutolinkFilterParser {
  */
 function _autolink_filter_settings($form, &$form_state, $filter, $format, $defaults, $filters) {
   $filter->settings += $defaults;
+  //dpm($defaults);
   return array(
     'reminder' => array(
       '#type'   => 'item',
-      '#title'  => t('In most cases, Autolink Filter should be the <em>last</em> filter in the &ldquo;Filter processing order&rdquo; list.'),
-      '#weight' => -10,
+      '#title'  => t('In most cases, Autolink Filter should be the <em>last</em> filter in the &ldquo;Filter processing order&rdquo; list. It is also recommended to run &ldquo;@htmlcorrector_name&rdquo; after this filter, when tooltips are in use.', array('@htmlcorrector_name' => t('Correct faulty and chopped off HTML'))),
+      '#weight' => -20,
+    ),
+    'processing_options' => array(
+      '#type'           => 'checkboxes',
+      '#title'          => t('Processing options'),
+      '#position'       => 'left',
+      '#options'        => _autolink_processing_options_array(),
+      '#default_value'  => $filter->settings['processing_options'],
+      '#weight'         => -5,
+      '#description'    => t('Select desirable processing options.'),
     ),
     'excluded_tags' => array(
       '#type'           => 'textfield',
-      '#title'          => t('HTML tags excluded from processing.'),
+      '#title'          => t('HTML tags excluded from processing'),
       '#default_value'  => $filter->settings['excluded_tags'],
       '#size'           => '63',
-      '#weight'         => -5,
+      '#weight'         => -10,
       '#description'    => t('Enter HTML tag names (separated by spaces and/or commas) which content (contained within) will not be processed.'),
     ),
      'excluded_words' => array(
         '#type'           => 'textfield',
-        '#title'          => t('Words excluded from processing.'),
+        '#title'          => t('Words excluded from processing'),
         '#default_value'  => $filter->settings['excluded_words'],
         '#size'           => '63',
-        '#weight'         => -2,
+        '#weight'         => -8,
         '#description'    => t('Enter words (separated by spaces and/or commas) which won\'t be processed.'),
     ),
     'vocabularies' => array(
@@ -276,4 +371,12 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
  */
 function autolink_filter_delete_all() {
   cache_clear_all('*', 'cache_filter');
+}
+
+function _autolink_filter_read_property($class, $propertyName)
+{
+    $reflectedClass = new ReflectionClass($class);
+    $property = $reflectedClass->getProperty($propertyName);
+    $property->setAccessible(true);
+    return $property->getValue($class);
 }
