@@ -100,8 +100,10 @@ function autolink_filter_query_autolink_sieve_alter(QueryAlterableInterface $que
   $sieve_table = 'field_data_' . $sieve_field;
   if(!db_table_exists($sieve_table)) { return; }
   $sieve_value_field = $sieve_field . '_value';
-  if(!db_field_exists($sieve_table, $sieve_value_field))  { return; }
-  if(!db_field_exists($sieve_table, 'entity_id'))         { return; }
+  if(!db_field_exists($sieve_table, $sieve_value_field) || !db_field_exists($sieve_table, 'entity_id')) {
+    $query->condition('0', '1', '=');
+    return;
+  }
   $tables =& $query->getTables();
   $query
     ->join($sieve_table, 'enabled', 'enabled.entity_id = ' . $tables['taxonomy_term_data']['alias'] . '.tid');
@@ -128,8 +130,7 @@ function autolink_filter_query_autolink_leaves_alter(QueryAlterableInterface $qu
 function autolink_filter_query_autolink_group_by_name_alter(QueryAlterableInterface $query) {
   $tables =& $query->getTables();
   $query
-    ->groupBy($tables['taxonomy_term_data']['alias'] . '.name');  
-
+    ->groupBy($tables['taxonomy_term_data']['alias'] . '.name');
   //dpm($query->__toString());
 }
 
@@ -163,9 +164,11 @@ class AutolinkFilterParser {
   private $leaves_only;   // use only taxonomy terms that are not parents of other terms
   private $use_tooltips;  // use tooltips
   private $selected_only; // require field_autolink to be true
-  private $taxonomy;      // taxonomy words
   private $changed;       // internal change marker
   private $used_tips;     // used term ID-s
+
+  private static $taxonomy = array();   // taxonomy words
+  private static $taxonomy_sum = '';    // taxonomy sum (for caching)
 
   function __construct($src, $vocs, $excluded_tags = '', $excluded_words = '', $min_length = 0,
                        $max_length = 0, $leaves_only = FALSE, $use_tooltips = TRUE, $selected_only = FALSE) {
@@ -176,7 +179,6 @@ class AutolinkFilterParser {
     if ($max_length == 0 || $max_length > 1024) { $max_length = 1024; }
 
     $this->src            = $src;
-    $this->taxonomy       = array();
     $this->vocabularies   = array();
     $this->leaves_only    = $leaves_only;
     $this->min_length     = $min_length;
@@ -196,6 +198,13 @@ class AutolinkFilterParser {
   }
 
   private function load_taxonomy() {
+    $cache_key = '-' . $this->min_length      . '-'         . $this->max_length     .
+                 '-' . $this->leaves_only     . '-'         . $this->selected_only  .
+                 '-' . implode(':', $this->excluded_words)  . '-' . implode(':', $this->vocabularies);
+
+    if (self::$taxonomy_sum === $cache_key) { return; }
+    self::$taxonomy = array();
+
     $query = new EntityFieldQuery;
     $query
       ->entityCondition('entity_type', 'taxonomy_term')
@@ -221,15 +230,20 @@ class AutolinkFilterParser {
       ->execute();
 
     if (isset($terms['taxonomy_term'])) {
-      $terms = entity_load('taxonomy_term', array_keys($terms['taxonomy_term']));
-      foreach($terms as $term) {
-        if (isset($term->name)) {
-          $tip = isset($term->tooltip) ? $term->tooltip : '';
-          $this->taxonomy[$term->name] = array($term->tid, $tip);
+      $tidgroups = array_chunk(array_keys($terms['taxonomy_term']), 15);
+      foreach($tidgroups as $tids) {
+        $terms = entity_load('taxonomy_term', $tids);
+        if (!isset($terms)) { continue; }
+        foreach($terms as $term) {
+          if (isset($term->name)) {
+            $tip = ($this->use_tooltips === TRUE && isset($term->tooltip)) ? $term->tooltip : '';
+            self::$taxonomy[$term->name] = array($term->tid, $tip);
+          }
         }
       }
     }
-    unset($terms, $query, $term, $tip, $name, $name_length);
+    self::$taxonomy_sum = $cache_key;
+    unset($terms, $term, $query, $tip, $cache_key, $tids, $name, $name_length, $tidgroups);
   }
 
   private function extract_words($text, $minlength = 0, $maxlength = 0) {
@@ -284,11 +298,11 @@ class AutolinkFilterParser {
   private function parse_fragment($matches) {
     if (!isset($matches[0])) { return ''; }
     $word = $matches[0];
-    if (array_key_exists($word, $this->taxonomy)) {
+    if (array_key_exists($word, self::$taxonomy)) {
       if (!$this->changed) { $this->changed = TRUE; }
-      list($tid, $tip) = $this->taxonomy[$word];
+      list($tid, $tip) = self::$taxonomy[$word];
       $tiprefstring = '';
-      if (!empty($tip)) {
+      if ($this->use_tooltips && !empty($tip)) {
         if (!array_key_exists($tid, $this->used_tips)) {
           $this->used_tips[$word] = $tid;
         }
@@ -303,18 +317,19 @@ class AutolinkFilterParser {
   }
 
   private function generate_tooltips() {
+    if (!$this->use_tooltips) { return ''; }
     $r = "\n" . '<!-- tooltips -->' . "\n";
     $r .= '<div id="tooltips-container" style="display:none;">' . "\n";
     $r .= '<p>Tooltips:</p>' . "\n";
     foreach($this->used_tips as $name => $tid) {
-      $r .= '  <div id="tooltip-def-' . $tid . '">' . $this->taxonomy[$name][1] . '</div>' . "\n";
+      $r .= '  <div id="tooltip-def-' . $tid . '">' . self::$taxonomy[$name][1] . '</div>' . "\n";
     }
     $r .= "</div>\n<!--eof tooltips -->\n";
     return $r;
   }
 
   public function clear() {
-    unset($this->src, $this->query, $this->taxonomy, $this->used_tips);
+    unset($this->src, $this->query, $this->used_tips);
   }
 }
 
