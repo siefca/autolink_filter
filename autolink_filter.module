@@ -11,19 +11,6 @@
 */
 
 /**
-* Gets vocabularies as an array.
-*/
-function _autolink_filter_vocab_array() {
-  $checklist_vocab_array = array();
-  $vocabulary = taxonomy_get_vocabularies();
-  foreach ($vocabulary as $item) {
-    $checklist_vocab_array[$item->vid] = $item->name;
-  }
-  unset($item);
-  return $checklist_vocab_array;
-}
-
-/**
 * Implements hook_init().
 */
 function autolink_filter_init() {
@@ -48,7 +35,9 @@ function autolink_filter_filter_info() {
       'excluded_words'  => $excluded_words,
       'vocabularies'    => _autolink_filter_vocab_array(),
       'processing_options' => array('use_tooltips'),
-    )
+      'min'             => 2,
+      'max'             => 32,
+    ),
   );
   return $filters;
 }
@@ -56,7 +45,7 @@ function autolink_filter_filter_info() {
 /**
 * Renders processing options array.
 */
-function _autolink_processing_options_array() {
+function _autolink_filter_processing_options_array() {
   return array(
     'leaves_only'   => t('Only use terms that are the last children (leaves) of a taxonomy tree.'),
     'selected_only' => t('Only use terms that have <code>field_autolink</code> boolean field set.'),
@@ -65,9 +54,120 @@ function _autolink_processing_options_array() {
 }
 
 /**
+* Gets vocabularies as an array.
+*/
+function _autolink_filter_vocab_array() {
+  $checklist_vocab_array = array();
+  $vocabulary = taxonomy_get_vocabularies();
+  foreach ($vocabulary as $item) {
+    $checklist_vocab_array[$item->vid] = $item->name;
+  }
+  unset($item);
+  return $checklist_vocab_array;
+}
+
+/**
+ * Settings callback.
+ */
+function _autolink_filter_settings($form, &$form_state, $filter, $format, $defaults, $filters) {
+  $filter->settings += $defaults;
+  return array(
+    'reminder' => array(
+      '#type'   => 'item',
+      '#title'  => t('In most cases, Autolink Filter should be the <em>last</em> filter in the &ldquo;Filter processing order&rdquo; list. It is also recommended to run &ldquo;@htmlcorrector_name&rdquo; after this filter, when tooltips are in use.', array('@htmlcorrector_name' => t('Correct faulty and chopped off HTML'))),
+      '#weight' => -20,
+    ),
+    'processing_options' => array(
+      '#type'           => 'checkboxes',
+      '#title'          => t('Processing options'),
+      '#position'       => 'left',
+      '#options'        => _autolink_filter_processing_options_array(),
+      '#default_value'  => $filter->settings['processing_options'],
+      '#weight'         => -5,
+      '#description'    => t('Select desirable processing options.'),
+    ),
+    'excluded_tags' => array(
+      '#type'           => 'textfield',
+      '#title'          => t('HTML tags excluded from processing'),
+      '#default_value'  => $filter->settings['excluded_tags'],
+      '#size'           => '63',
+      '#weight'         => -10,
+      '#description'    => t('Enter HTML tag names (separated by spaces and/or commas) which content (contained within) will not be processed.'),
+    ),
+    'excluded_words' => array(
+      '#type'           => 'textfield',
+      '#title'          => t('Words excluded from processing'),
+      '#default_value'  => $filter->settings['excluded_words'],
+      '#size'           => '63',
+      '#weight'         => -8,
+      '#description'    => t('Enter words (separated by spaces and/or commas) which won\'t be processed.'),
+    ),
+    'min'               => array(
+      '#type'           => 'textfield',
+      '#title'          => t('Minimum length of a word'),
+      '#default_value'  => $filter->settings['min'],
+      '#size'           => '3',
+      '#maxlength'      => '4',
+      '#element_validate' => array('_autolink_filter_length_validate'),
+      '#weight'         => -4,
+      '#description'    => t('Minimum acceptable number of characters in a word to be processed (0 ' . t('to') . ' 32)'),
+    ),
+      'max'             => array(
+      '#type'           => 'textfield',
+      '#title'          => t('Maximum length of a word'),
+      '#default_value'  => $filter->settings['max'],
+      '#size'           => '3',
+      '#maxlength'      => '4',
+      '#element_validate' => array('_autolink_filter_length_validate'),
+      '#weight'         => -2,
+      '#description'    => t('Maximum acceptable number of characters in a word to be processed (1 ' . t('to') . ' 32)'),    
+    ),
+    'vocabularies' => array(
+      '#type'           => 'checkboxes',
+      '#title'          => t('Vocabularies'),
+      '#position'       => 'left',
+      '#options'        => _autolink_filter_vocab_array(),
+      '#default_value'  => $filter->settings['vocabularies'],
+      '#weight'         => 0,
+      '#description'    => t('Select taxonomy vocabularies used to automatically link keywords.'),
+    )
+  );
+}
+
+/**
+ * Element validate callback for fields that contain lengths.
+ */
+function _autolink_filter_length_validate($element, $form_state, $form) {
+  if (!empty($element['#value']) && !is_numeric($element['#value'])) {
+    form_error($element, $element['#title'] . ' ' . t('should only contain numbers.'));
+  }
+
+  settype($element['#value'], 'integer');
+  $val = $element['#value'];
+  $errv = FALSE;
+  if ($val > 32) {
+    $errv = 'should not be greater than 32';
+  }
+  else {
+    switch(end($element['#array_parents'])) {
+      case 'min':
+        if ($val < 0) { $errv = 0; }
+        break;
+      case 'max':
+        if ($val < 1) { $errv = 1; }
+        break;
+    }
+    if ($errv !== FALSE) { $errv = t('should be equal or greater than') . ' ' . $errv; }
+  }
+  if ($errv !== FALSE) { form_error($element, $element['#title'] . ' ' . $errv . '.'); }
+}
+
+/**
 * Filter process callback.
 */
 function _autolink_filter_process_filter($text, $filter) {
+  $min                = $filter->settings['min'];
+  $max                = $filter->settings['max'];
   $vocs               = $filter->settings['vocabularies'];
   $excl_tags          = $filter->settings['excluded_tags'];
   $excl_words         = $filter->settings['excluded_words'];
@@ -75,11 +175,11 @@ function _autolink_filter_process_filter($text, $filter) {
   $leaves_only        = array_key_exists('leaves_only',   $processing_options);
   $selected_only      = array_key_exists('selected_only', $processing_options);
   $use_tooltips       = array_key_exists('use_tooltips',  $processing_options);
-  $min = 3;
-  $max = 0; // fixme!
 
   if (!isset($vocs) || empty($vocs)) { return $text; }
   if (!isset($excl)) { $excl = ""; }
+  if (!is_integer($min)) { settype($min, 'integer'); }
+  if (!is_integer($max)) { settype($max, 'integer'); }
 
   $parser = new AutolinkFilterParser($text, $vocs, $excl_tags, $excl_words, $min, $max,
                                      $leaves_only, $use_tooltips, $selected_only);
@@ -154,6 +254,21 @@ function autolink_filter_query_taxonomy_name_length_alter(QueryAlterableInterfac
 }
 
 /**
+ * Delete unneeded things after uninstalling.
+ */
+function autolink_filter_delete_all() {
+  cache_clear_all('*', 'cache_filter');
+}
+
+function _autolink_filter_read_property($class, $propertyName)
+{
+    $reflectedClass = new ReflectionClass($class);
+    $property = $reflectedClass->getProperty($propertyName);
+    $property->setAccessible(true);
+    return $property->getValue($class);
+}
+
+/**
 * Parser class
 */
 class AutolinkFilterParser {
@@ -173,10 +288,10 @@ class AutolinkFilterParser {
   function __construct($src, $vocs, $excluded_tags = '', $excluded_words = '', $min_length = 0,
                        $max_length = 0, $leaves_only = FALSE, $use_tooltips = TRUE, $selected_only = FALSE) {
 
-    if (!is_numeric($min_length) || $min_length < 0) { $min_length = 0; }
-    if (!is_numeric($max_length) || $max_length < 0) { $max_length = 0; }
-    if ($min_length > 32)  { $min_length = 32; }
-    if ($max_length == 0 || $max_length > 1024) { $max_length = 1024; }
+    if (!is_numeric($min_length) || $min_length < 0) { $min_length = 0;  }
+    if (!is_numeric($max_length) || $max_length < 0) { $max_length = 0;  }
+    if ($min_length > 255)  { $min_length = 255; }
+    if ($max_length == 0 || $max_length > 255) { $max_length = 255; }
 
     $this->src            = $src;
     $this->vocabularies   = array();
@@ -349,65 +464,3 @@ class AutolinkFilterParser {
   }
 }
 
-/**
- * Settings callback.
- */
-function _autolink_filter_settings($form, &$form_state, $filter, $format, $defaults, $filters) {
-  $filter->settings += $defaults;
-  //dpm($defaults);
-  return array(
-    'reminder' => array(
-      '#type'   => 'item',
-      '#title'  => t('In most cases, Autolink Filter should be the <em>last</em> filter in the &ldquo;Filter processing order&rdquo; list. It is also recommended to run &ldquo;@htmlcorrector_name&rdquo; after this filter, when tooltips are in use.', array('@htmlcorrector_name' => t('Correct faulty and chopped off HTML'))),
-      '#weight' => -20,
-    ),
-    'processing_options' => array(
-      '#type'           => 'checkboxes',
-      '#title'          => t('Processing options'),
-      '#position'       => 'left',
-      '#options'        => _autolink_processing_options_array(),
-      '#default_value'  => $filter->settings['processing_options'],
-      '#weight'         => -5,
-      '#description'    => t('Select desirable processing options.'),
-    ),
-    'excluded_tags' => array(
-      '#type'           => 'textfield',
-      '#title'          => t('HTML tags excluded from processing'),
-      '#default_value'  => $filter->settings['excluded_tags'],
-      '#size'           => '63',
-      '#weight'         => -10,
-      '#description'    => t('Enter HTML tag names (separated by spaces and/or commas) which content (contained within) will not be processed.'),
-    ),
-     'excluded_words' => array(
-        '#type'           => 'textfield',
-        '#title'          => t('Words excluded from processing'),
-        '#default_value'  => $filter->settings['excluded_words'],
-        '#size'           => '63',
-        '#weight'         => -8,
-        '#description'    => t('Enter words (separated by spaces and/or commas) which won\'t be processed.'),
-    ),
-    'vocabularies' => array(
-      '#type'           => 'checkboxes',
-      '#title'          => t('Vocabularies'),
-      '#position'       => 'left',
-      '#options'        => _autolink_filter_vocab_array(),
-      '#default_value'  => $filter->settings['vocabularies'],
-      '#description'    => t('Select taxonomy vocabularies used to automatically link keywords.'),
-    )
-  );
-}
-
-/**
- * Delete unneeded things after uninstalling.
- */
-function autolink_filter_delete_all() {
-  cache_clear_all('*', 'cache_filter');
-}
-
-function _autolink_filter_read_property($class, $propertyName)
-{
-    $reflectedClass = new ReflectionClass($class);
-    $property = $reflectedClass->getProperty($propertyName);
-    $property->setAccessible(true);
-    return $property->getValue($class);
-}
