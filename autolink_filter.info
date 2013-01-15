@@ -6,8 +6,8 @@ configure = admin/config/content/formats
 
 dependencies[] = "simplehtmldom"
 
-version = "7.x-1.2"
+version = "7.x-1.4"
 core = "7.x"
 project = "autolink_filter"
-datestamp = "1321824642"
+datestamp = "1321824644"
 
