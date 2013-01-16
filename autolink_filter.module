@@ -501,12 +501,18 @@ class AutolinkFilterParser {
   private function in_excluded_tag(& $el) {
     if (!isset($el->parent)) { return FALSE; }
     $p = & $el->parent;
-    $excluded = array_intersect(preg_split('/\s/', $p->class), $this->excluded_classes);
-    if (array_key_exists($p->tag, $this->excluded_tags) || ($p->hasAttribute('class') && !empty($excluded))) {
-      unset($excluded);
-      return TRUE;
+
+    if ($p->hasAttribute('class')) {
+      $classes = array_flip(preg_split('/\s/', $p->class));
+      if (array_intersect_key($classes, $this->excluded_classes)) {
+        unset($classes);
+        return TRUE;
+      }
+      unset($classes);
     }
-    unset($excluded);
+
+    if (array_key_exists($p->tag, $this->excluded_tags)) { return TRUE; }
+
     return $this->in_excluded_tag($p);
   }
 
