@@ -224,21 +224,7 @@ function autolink_filter_query_autolink_leaves_alter(QueryAlterableInterface $qu
     ->leftJoin('taxonomy_term_hierarchy', 'parents', 'parents.parent = ' . $tables['taxonomy_term_data']['alias'] . '.tid');
   $query
     ->isNull('parents.parent');  
-}
-
-/**
-* Adds query autolink_synonyms tag for loading synonyms.
-*/
-function autolink_filter_query_autolink_synonyms_alter(QueryAlterableInterface $query) {
-  $tables =& $query->getTables();
-  $query
-    ->leftJoin('field_data_synonyms_synonyms', 'synonyms',
-               'synonyms.entity_id = ' . $tables['taxonomy_term_data']['alias'] . '.tid AND ' .
-               'synonyms.entity_type = \'taxonomy_term\'');
-  $query
-    ->groupBy('synonyms.synonyms_synonyms_value');
-//  ->propertyCondition('name', , 'NOT IN')
-  dpm($query->__toString());
+  //dpm($query->__toString());
 }
 
 /**
@@ -251,14 +237,28 @@ function autolink_filter_query_autolink_group_by_name_alter(QueryAlterableInterf
 }
 
 /**
+* Adds query autolink_order_by_length tag for removing duplicated names when multiple matches occur.
+*/
+function autolink_filter_query_autolink_order_by_length_alter(QueryAlterableInterface $query) {
+  $fn = _autolink_sql_length_clause($query);
+  $tables =& $query->getTables();
+  $td = $tables['taxonomy_term_data']['alias'];
+  if ($query->getMetaData('use_tooltips') === TRUE && db_table_exists('field_data_field_autolink_tooltip')) {
+    $query
+      ->leftJoin('field_data_field_autolink_tooltip', 'ttips',
+                 'ttips.entity_id = ' . $td . '.tid AND ttips.entity_type = taxonomy_term');
+    $query
+      ->orderBy($fn . '(ttips.field_autolink_tooltip_value)', 'DESC');
+  }
+  $query
+    ->orderBy($fn . '(' . $td . '.description)', 'DESC');
+}
+
+/**
 * Adds query taxonomy_name_length tag for filtering out names that have unwanted lengths.
 */
 function autolink_filter_query_taxonomy_name_length_alter(QueryAlterableInterface $query) {
-  static $fn = NULL;
-  if ($fn === NULL) {
-    $fn = (_autolink_filter_read_property($query, 'connection')->databaseType() == 'sqlite') ? 'LENGTH' : 'CHAR_LENGTH';
-  }
-
+  $fn = _autolink_sql_length_clause($query);
   $tables =& $query->getTables();
   $tname = $tables['taxonomy_term_data']['alias'];
   $min = $query->getMetaData('name_length_min');
@@ -267,6 +267,14 @@ function autolink_filter_query_taxonomy_name_length_alter(QueryAlterableInterfac
     ->where($fn . '(' . $tname . '.name) >= ' . $min);
   $query
     ->where($fn . '(' . $tname . '.name) <= ' . $max);
+}
+
+function _autolink_sql_length_clause($query) {
+  static $fn = NULL;
+  if ($fn === NULL) {
+    $fn = (_autolink_filter_read_property($query, 'connection')->databaseType() == 'sqlite') ? 'LENGTH' : 'CHAR_LENGTH';
+  }
+ return $fn; 
 }
 
 /**
@@ -352,9 +360,14 @@ class AutolinkFilterParser {
       ->entityCondition('entity_type', 'taxonomy_term')
       ->propertyCondition('vid',  $this->vocabularies, 'IN')
       ->propertyCondition('name', $this->excluded_words, 'NOT IN')
-      ->propertyOrderBy('weight');
+      ->propertyOrderBy('name')
+      ->propertyOrderBy('weight')
+      ->addMetaData('use_tooltips', TRUE)
+      ->addTag('autolink_order_by_length');
 
-    // Do not filter lengths and don't group by name when using synonyms.
+    // Do not filter lengths and don't group by name when using synonyms,
+    // but do it later when post-processing taxonomy entities. We don't want
+    // synonyms to be dropped just because main term is not meeting certain criteria.
     if (!$this->use_synonyms_real) {
       $query
         ->addMetaData('name_length_min', $this->min_length)
@@ -408,12 +421,12 @@ class AutolinkFilterParser {
       if (array_key_exists($use_name, self::$taxonomy))     { return; }
     }
     self::$taxonomy[$use_name] = $term->tid;
-    if ($this->use_tooltips && isset($term->tooltip)) {
+    if ($this->use_tooltips && isset($term->autolink_tooltip)) {
       if (!array_key_exists($term->tid, self::$tooltips)) {
-        self::$tooltips[$term->tid] = $tip;
+        self::$tooltips[$term->tid] = array('tip' => $term->autolink_tooltip, 'orig' => $term->name);
       }
     }
-    unset($l, $term, $use_name);
+    unset($l, $term, $use_name, $orign);
   }
 
   private function extract_synonyms($term) {
@@ -422,6 +435,9 @@ class AutolinkFilterParser {
       foreach($term->synonyms_synonyms['und'] as $s) {
         if (isset($s['safe_value'])) {
           $r[] = $s['safe_value'];
+        }
+        elseif (isset($s['value'])) {
+          $r[] = $s['value'];
         }
       }
     }
@@ -490,7 +506,7 @@ class AutolinkFilterParser {
     if (array_key_exists($word, self::$taxonomy)) {
       if (!$this->changed) { $this->changed = TRUE; }
       $tid = self::$taxonomy[$word];
-      $tip = array_key_exists($tid, self::$tooltips) ? self::$tooltips[$tid] : '';
+      $tip = array_key_exists($tid, self::$tooltips) ? self::$tooltips[$tid]['tip'] : '';
       $tiprefstring = '';
       if ($this->use_tooltips && !empty($tip)) {
         if (!array_key_exists($tid, $this->used_tips)) {
@@ -511,7 +527,14 @@ class AutolinkFilterParser {
     $r .= '<div id="tooltips-container" style="display:none;">' . "\n";
     $r .= '<p>Tooltips:</p>' . "\n";
     foreach($this->used_tips as $name => $tid) {
-      $r .= '  <div id="tooltip-def-' . $tid . '">' . self::$tooltips[$tid] . '</div>' . "\n";
+      $orign = self::$tooltips[$tid]['orig'];
+      $th = $name;
+      if ($orign !== $name) {
+        $th .= ' ' . t('(i.e. @original_term)', array('@original_term' => $orign));
+      }
+      $r .= '  ' . '<h3 class="tooltip-header">' . $th . '</h3>' . "\n";
+      $r .= '  <div id="tooltip-def-' . $tid . '">' . self::$tooltips[$tid]['tip'];
+      $r .= '  </div>' . "\n";
     }
     $r .= "</div>\n<!--eof tooltips -->\n";
     return $r;
