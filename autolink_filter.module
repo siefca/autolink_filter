@@ -21,10 +21,11 @@ function autolink_filter_init() {
 * Implements hook_filter_info().
 */
 function autolink_filter_filter_info() {
-  $filters        = array();
-  $excluded_tags  = 'a link pre h1 h2 h3 h4 h5 h6 h7 code pre address';
-  $excluded_words = 'or of because and but no yes though because they i you he she it since are were have had been m very' . 
-                    'less also to too then when';
+  $filters          = array();
+  $excluded_tags    = 'a link pre h1 h2 h3 h4 h5 h6 h7 code pre address';
+  $excluded_classes = 'nolink';
+  $excluded_words   = 'or of because and but no yes though because they i you he she it since are were have had been m very' . 
+                      'less also to too then when';
   $filters['autolink_filter'] = array(
     'title'             => t('Automatically link keywords from vocabularies'),
     'process callback'  => '_autolink_filter_process_filter',
@@ -32,6 +33,7 @@ function autolink_filter_filter_info() {
     'weight'            => 50,
     'default settings'  => array(
       'excluded_tags'   => $excluded_tags,
+      'excluded_classes'=> $excluded_classes,
       'excluded_words'  => $excluded_words,
       'vocabularies'    => _autolink_filter_vocab_array(),
       'processing_options' => array('use_tooltips', 'use_synonyms'),
@@ -93,14 +95,22 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
       '#default_value'  => $filter->settings['excluded_tags'],
       '#size'           => '63',
       '#weight'         => -10,
-      '#description'    => t('Enter HTML tag names (separated by spaces and/or commas) which content (contained within) will not be processed.'),
+      '#description'    => t('Enter HTML tag names (separated by spaces and/or commas) for which a content (contained within) will not be processed.'),
+    ),
+    'excluded_classes' => array(
+      '#type'           => 'textfield',
+      '#title'          => t('HTML classes excluded from processing'),
+      '#default_value'  => $filter->settings['excluded_classes'],
+      '#size'           => '63',
+      '#weight'         => -8,
+      '#description'    => t('Enter HTML class attribute values (separated by spaces and/or commas) for which a content (contained within) will not be processed.'),
     ),
     'excluded_words' => array(
       '#type'           => 'textfield',
       '#title'          => t('Words excluded from processing'),
       '#default_value'  => $filter->settings['excluded_words'],
       '#size'           => '63',
-      '#weight'         => -8,
+      '#weight'         => -7,
       '#description'    => t('Enter words (separated by spaces and/or commas) which won\'t be processed.'),
     ),
     'min'               => array(
@@ -167,11 +177,13 @@ function _autolink_filter_length_validate($element, $form_state, $form) {
 * Filter process callback.
 */
 function _autolink_filter_process_filter($text, $filter) {
-  $min                = $filter->settings['min'];
-  $max                = $filter->settings['max'];
-  $vocs               = $filter->settings['vocabularies'];
-  $excl_tags          = $filter->settings['excluded_tags'];
-  $excl_words         = $filter->settings['excluded_words'];
+  $s                  = $filter->settings;
+  $min                = $s['min'];
+  $max                = $s['max'];
+  $vocs               = $s['vocabularies'];
+  $excl_tags          = $s['excluded_tags'];
+  $excl_words         = $s['excluded_words'];
+  $excl_classes       = $s['excluded_classes'];
   $processing_options = array_filter($filter->settings['processing_options']);
   $leaves_only        = array_key_exists('leaves_only',   $processing_options);
   $selected_only      = array_key_exists('selected_only', $processing_options);
@@ -179,16 +191,22 @@ function _autolink_filter_process_filter($text, $filter) {
   $use_synonyms       = array_key_exists('use_synonyms',  $processing_options);
 
   if (!isset($vocs) || empty($vocs)) { return $text; }
-  if (!isset($excl)) { $excl = ""; }
-  if (!is_integer($min)) { settype($min, 'integer'); }
-  if (!is_integer($max)) { settype($max, 'integer'); }
+  if (!isset($excl_tags)    || empty($excl_tags))     { $excl_tags     = NULL; }
+  if (!isset($excl_words)   || empty($excl_words))    { $excl_words    = NULL; }
+  if (!isset($excl_classes) || empty($excl_classes))  { $excl_classes  = NULL; }
+  if (!isset($leaves_only))                           { $leaves_only   = NULL; }
+  if (!isset($selected_only))                         { $selected_only = NULL; }
+  if (!isset($use_tooltips))                          { $use_tooltips  = NULL; }
+  if (!isset($use_synonyms))                          { $use_synonyms  = NULL; }
+  if (!is_integer($min))                              { settype($min, 'integer'); }
+  if (!is_integer($max))                              { settype($max, 'integer'); }
 
-  $parser = new AutolinkFilterParser($text, $vocs, $excl_tags, $excl_words, $min, $max,
+  $parser = new AutolinkFilterParser($text, $vocs, $excl_tags, $excl_classes, $excl_words, $min, $max,
                                      $leaves_only, $use_tooltips, $selected_only, $use_synonyms);
 
   $r = $parser->parse();
   $parser->clear();
-  unset($vocs, $excl_tags, $excl_words);
+  unset($vocs, $excl_tags, $excl_words, $excl_classes, $s);
   return $r;
 }
 
@@ -313,25 +331,35 @@ class AutolinkFilterParser {
   private static $taxonomy_sum  = '';       // taxonomy sum (for caching)
   private static $chunk_size    = 15;       // number of taxonomy items to load and process at once (takes care of memory)
 
-  function __construct($src, $vocs, $excluded_tags = '', $excluded_words = '', $min_length = 0,
+  function __construct($src, $vocs, $excluded_tags = '', $excluded_classes = '', $excluded_words = '', $min_length = 0,
                        $max_length = 0, $leaves_only = FALSE, $use_tooltips = TRUE, $selected_only = FALSE,
                        $use_synonyms = 1) {
 
-    if (!is_numeric($min_length) || $min_length < 0) { $min_length = 0;  }
-    if (!is_numeric($max_length) || $max_length < 0) { $max_length = 0;  }
+    if (is_null($vocs))             { $vocs = array();              }
+    if (is_null($excluded_tags))    { $excluded_tags    = array();  }
+    if (is_null($excluded_words))   { $excluded_words   = array();  }
+    if (is_null($excluded_classes)) { $excluded_classes = array();  }
+    if (is_null($leaves_only))      { $leaves_only      = FALSE;    }
+    if (is_null($selected_only))    { $selected_only    = FALSE;    }
+    if (is_null($use_tooltips))     { $use_tooltips     = FALSE;    }
+    if (is_null($use_synonyms))     { $use_synonyms     = FALSE;    }
+
+    if (!is_numeric($min_length) || $min_length < 0)    { $min_length = 0;  }
+    if (!is_numeric($max_length) || $max_length < 0)    { $max_length = 0;  }
     if ($min_length > 255)  { $min_length = 255; }
     if ($max_length == 0 || $max_length > 255) { $max_length = 255; }
 
-    $this->src            = $src;
-    $this->vocabularies   = array();
-    $this->leaves_only    = $leaves_only;
-    $this->min_length     = $min_length;
-    $this->max_length     = $max_length;
-    $this->use_tooltips   = $use_tooltips;
-    $this->selected_only  = $selected_only;
-    $this->use_synonyms   = $use_synonyms;
-    $this->excluded_tags  = $this->extract_words_as_keys(drupal_strtolower($excluded_tags));
-    $this->excluded_words = $this->extract_words($excluded_words, $this->min_length, $this->max_length);
+    $this->src              = $src;
+    $this->vocabularies     = array();
+    $this->leaves_only      = $leaves_only;
+    $this->min_length       = $min_length;
+    $this->max_length       = $max_length;
+    $this->use_tooltips     = $use_tooltips;
+    $this->selected_only    = $selected_only;
+    $this->use_synonyms     = $use_synonyms;
+    $this->excluded_tags    = $this->extract_words_as_keys(drupal_strtolower($excluded_tags));
+    $this->excluded_words   = $this->extract_words($excluded_words, $this->min_length, $this->max_length);
+    $this->excluded_classes = $this->extract_words_as_keys(drupal_strtolower($excluded_classes)); 
 
     foreach($vocs as $vid => $name) {
       if ($name) {
@@ -472,8 +500,14 @@ class AutolinkFilterParser {
 
   private function in_excluded_tag(& $el) {
     if (!isset($el->parent)) { return FALSE; }
-    if (array_key_exists($el->parent->tag, $this->excluded_tags)) { return TRUE; }
-    return $this->in_excluded_tag($el->parent);
+    $p = & $el->parent;
+    $excluded = array_intersect(preg_split('/\s/', $p->class), $this->excluded_classes);
+    if (array_key_exists($p->tag, $this->excluded_tags) || ($p->hasAttribute('class') && !empty($excluded))) {
+      unset($excluded);
+      return TRUE;
+    }
+    unset($excluded);
+    return $this->in_excluded_tag($p);
   }
 
   public function parse() {

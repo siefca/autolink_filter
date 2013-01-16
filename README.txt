@@ -10,11 +10,12 @@ Adds a filter to automatically link known taxonomy terms.
 TODO:
 
 - test if main term is too long but its synonyms are ok.
+- test for parent tags and parent classes exclusion
 - also test if tooltips are generated
 
 - add setting for content type or content type / content field selection (e.g. 'articles only'),
 - add class exclusion support (e.g. elements that are enclosed with some class are not highlighted),
 - add an option to use tooltips field OR description,
-- add JS for tooltips.
-
+- add JS for tooltips,
+- change DOM parser to faster.
 
