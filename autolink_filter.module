@@ -121,7 +121,8 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
       '#maxlength'      => '4',
       '#element_validate' => array('_autolink_filter_length_validate'),
       '#weight'         => -4,
-      '#description'    => t('Minimum acceptable number of characters in a word to be processed (0 ' . t('to') . ' 32)'),
+      '#description'    => t('The minimum acceptable number of letters in a word to be processed (@min to @max)',
+                            array('@min' => 0, '@max' => 32)),
     ),
       'max'             => array(
       '#type'           => 'textfield',
@@ -131,7 +132,8 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
       '#maxlength'      => '4',
       '#element_validate' => array('_autolink_filter_length_validate'),
       '#weight'         => -2,
-      '#description'    => t('Maximum acceptable number of characters in a word to be processed (1 ' . t('to') . ' 32)'),    
+      '#description'    => t('The maximum acceptable number of letters in a word to be processed (@min to @max)',
+                            array('@min' => 1, '@max' => 32)),
     ),
     'vocabularies' => array(
       '#type'           => 'checkboxes',
@@ -325,11 +327,12 @@ class AutolinkFilterParser {
   private $changed;           // internal change marker
   private $used_tips;         // used term ID-s
   private $use_synonyms_real; // deduced ability to use synonyms
+  private $callbacks;         // arrays for preg_replace method with callback method names
 
   private static $taxonomy      = array();  // taxonomy words
   private static $tooltips      = array();  // taxonomy tooltips
   private static $taxonomy_sum  = '';       // taxonomy sum (for caching)
-  private static $chunk_size    = 15;       // number of taxonomy items to load and process at once (takes care of memory)
+  private static $chunk_size    = 20;       // number of taxonomy items to load and process at once (takes care of memory)
 
   function __construct($src, $vocs, $excluded_tags = '', $excluded_classes = '', $excluded_words = '', $min_length = 0,
                        $max_length = 0, $leaves_only = FALSE, $use_tooltips = TRUE, $selected_only = FALSE,
@@ -359,7 +362,10 @@ class AutolinkFilterParser {
     $this->use_synonyms     = $use_synonyms;
     $this->excluded_tags    = $this->extract_words_as_keys(drupal_strtolower($excluded_tags));
     $this->excluded_words   = $this->extract_words($excluded_words, $this->min_length, $this->max_length);
-    $this->excluded_classes = $this->extract_words_as_keys(drupal_strtolower($excluded_classes)); 
+    $this->excluded_classes = $this->extract_words_as_keys(drupal_strtolower($excluded_classes));
+
+    $this->callbacks->parse_fragment = array(&$this, 'parse_fragment');
+    $this->callbacks->parse_sentence = array(&$this, 'parse_sentence');
 
     foreach($vocs as $vid => $name) {
       if ($name) {
@@ -518,15 +524,35 @@ class AutolinkFilterParser {
 
   public function parse() {
     static $re_words = '/[\pL\p{Pc}\p{Pd}\pN\/]+/u';
+    static $pa_wordsplit_beg = '/(^|[^\pL\p{Pc}\p{Pd}\pN\/]+)(';
+    static $pa_wordsplit_end = ')($|[^\pL\p{Pc}\p{Pd}\pN\/]+)/u';
     $this->changed = FALSE;
     $this->used_tips = array();
     $this->html = new simple_html_dom();
     $this->html->load($this->src, true, false);
-    foreach ($this->html->find('text') as $fragment) {
-      if (!$this->in_excluded_tag($fragment)) {
-        $fragment->innertext = preg_replace_callback($re_words, array(&$this, 'parse_fragment'), $fragment->innertext);
+    
+    // Step I - parse terms that have multiple words.
+    foreach (self::$taxonomy as $term => $tid) {
+      if(strpos($term, ' ') !== FALSE) {
+        foreach ($this->html->find('text') as $fragment) {
+          if (!$this->in_excluded_tag($fragment)) {
+            $rgx = $pa_wordsplit_beg . preg_quote($term) . $pa_wordsplit_end; // todo: add some chunking here and joint regex
+            $fragment->innertext = preg_replace_callback($rgx, $this->callbacks->parse_sentence, $fragment->innertext);
+          }
+        }
       }
     }
+
+    if ($this->changed) { $this->html->load($this->html->save()); }
+
+    // Step II - parse terms that are single words.
+    foreach ($this->html->find('text') as $fragment) {
+      if (!$this->in_excluded_tag($fragment)) {
+        $fragment->innertext = preg_replace_callback($re_words, $this->callbacks->parse_fragment, $fragment->innertext);
+      }
+    }
+
+    // Step III - generate tooltips.
     if ($this->changed) {
       $ttips = $this->use_tooltips ? $this->generate_tooltips() : '';
       $out = $this->html->outertext . $ttips;
@@ -536,7 +562,7 @@ class AutolinkFilterParser {
       $out = $this->src;
     }
     $this->html->clear();
-    unset($this->html, $fragment, $vid, $vname);
+    unset($this->html, $fragment, $vid, $vname, $term);
     return $out;
   }
 
@@ -544,22 +570,32 @@ class AutolinkFilterParser {
     if (!isset($matches[0])) { return ''; }
     $word = $matches[0];
     if (array_key_exists($word, self::$taxonomy)) {
-      if (!$this->changed) { $this->changed = TRUE; }
-      $tid = self::$taxonomy[$word];
-      $tip = array_key_exists($tid, self::$tooltips) ? self::$tooltips[$tid]['tip'] : '';
-      $tiprefstring = '';
-      if ($this->use_tooltips && !empty($tip)) {
-        if (!array_key_exists($tid, $this->used_tips)) {
-          $this->used_tips[$word] = $tid;
-        }
-        $tiprefstring = 'id="tooltip-ref-' . $tid . '"';
-      }
-      return '<a href="' . url('taxonomy/term/' . $tid) . '" title="' . $word . '" ' .
-             'class="taxonomy-autolink"' . $tiprefstring . '>' . $word . '</a>';
+      return $this->generate_link($word);
     }
     else {
       return $word;
     }
+  }
+
+  private function parse_sentence($matches) {
+    if (!isset($matches[0])) { return ''; }
+    return $matches[1] . $this->generate_link($matches[2]) . $matches[3];
+  }
+
+  private function generate_link($word) {
+    if (!$this->changed) { $this->changed = TRUE; }
+    $tid = self::$taxonomy[$word];
+    $tip = array_key_exists($tid, self::$tooltips) ? self::$tooltips[$tid]['tip'] : '';
+    $tiprefstring = '';
+    if ($this->use_tooltips && !empty($tip)) {
+      if (!array_key_exists($tid, $this->used_tips)) {
+        $this->used_tips[$word] = $tid;
+      }
+      $tiprefstring = 'id="tooltip-ref-' . $tid . '"';
+    }
+    unset($tip);
+    return '<a href="' . url('taxonomy/term/' . $tid) . '" title="' . $word . '" ' .
+           'class="taxonomy-autolink"' . $tiprefstring . '>' . $word . '</a>';
   }
 
   private function generate_tooltips() {
