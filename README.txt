@@ -4,9 +4,14 @@ Adds a filter to automatically link known taxonomy terms.
 
  * words exclusion
  * HTML tag-based and class-based exclusion
- * manual inclusion when special boolean field is added to taxonomy terms
+ * explicite inclusion support with optional switch added to taxonomy terms
  * tooltips generation support based on tooltip field or description
+ * term phrases support (multiple words as terms)
  * taxonomy synonyms support
+ * min/max lengths filtering
+ * optional children-only filtering (using only leaves of taxonomy tree)
+ * uses various parsing algorithms for different types of terms
+ * memory-friendly
 
 TODO:
 
@@ -16,11 +21,15 @@ TODO:
 
 - add setting for number of instances of a single term to be highlighted
 - add setting for content type or content type / content field selection (e.g. 'articles only'),
+- add an option for generating virtual terms with names containing all parent terms joint,
 - add class exclusion support (e.g. elements that are enclosed with some class are not highlighted),
 - add an option to use tooltips field OR description,
 - add JS for tooltips,
-- in multiple words substitution allow first word to be matched case-insensitively,
+- reload html if overlaping terms are detected,
+- remove limits from sql if no values are present,
 - change DOM parser to faster.
+
+- maybe add some length checks in regexps?
 
 Tooltips:
 

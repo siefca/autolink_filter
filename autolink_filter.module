@@ -23,9 +23,9 @@ function autolink_filter_init() {
 function autolink_filter_filter_info() {
   $filters          = array();
   $excluded_tags    = 'a link pre h1 h2 h3 h4 h5 h6 h7 code pre address';
-  $excluded_classes = 'nolink';
-  $excluded_words   = 'or of because and but no yes though because they i you he she it since are were have had been m very' . 
-                      'less also to too then when';
+  $excluded_classes = 'nolink caption';
+  $excluded_words   = 'or of for while because and but no yes though they i you he she it since are were have had been m very' . 
+                      'less also to too then when off over';
   $filters['autolink_filter'] = array(
     'title'             => t('Automatically link keywords from vocabularies'),
     'process callback'  => '_autolink_filter_process_filter',
@@ -186,6 +186,7 @@ function _autolink_filter_process_filter($text, $filter) {
   $excl_tags          = $s['excluded_tags'];
   $excl_words         = $s['excluded_words'];
   $excl_classes       = $s['excluded_classes'];
+
   $processing_options = array_filter($filter->settings['processing_options']);
   $leaves_only        = array_key_exists('leaves_only',   $processing_options);
   $selected_only      = array_key_exists('selected_only', $processing_options);
@@ -327,12 +328,14 @@ class AutolinkFilterParser {
   private $changed;           // internal change marker
   private $used_tips;         // used term ID-s
   private $use_synonyms_real; // deduced ability to use synonyms
+  private $taxonomy_cache_key;// taxonomy cache key for current instance
   private $callbacks;         // arrays for preg_replace method with callback method names
+  private $re;                // regular expression patterns
 
-  private static $taxonomy      = array();  // taxonomy words
+  private static $taxonomy      = array();  // taxonomies
   private static $tooltips      = array();  // taxonomy tooltips
   private static $taxonomy_sum  = '';       // taxonomy sum (for caching)
-  private static $chunk_size    = 20;       // number of taxonomy items to load and process at once (takes care of memory)
+  private static $chunk_size    = 28;       // number of taxonomy items to load and process at once
 
   function __construct($src, $vocs, $excluded_tags = '', $excluded_classes = '', $excluded_words = '', $min_length = 0,
                        $max_length = 0, $leaves_only = FALSE, $use_tooltips = TRUE, $selected_only = FALSE,
@@ -352,41 +355,110 @@ class AutolinkFilterParser {
     if ($min_length > 255)  { $min_length = 255; }
     if ($max_length == 0 || $max_length > 255) { $max_length = 255; }
 
-    $this->src              = $src;
-    $this->vocabularies     = array();
-    $this->leaves_only      = $leaves_only;
-    $this->min_length       = $min_length;
-    $this->max_length       = $max_length;
-    $this->use_tooltips     = $use_tooltips;
-    $this->selected_only    = $selected_only;
-    $this->use_synonyms     = $use_synonyms;
-    $this->excluded_tags    = $this->extract_words_as_keys(drupal_strtolower($excluded_tags));
-    $this->excluded_words   = $this->extract_words($excluded_words, $this->min_length, $this->max_length);
-    $this->excluded_classes = $this->extract_words_as_keys(drupal_strtolower($excluded_classes));
+    $this->src                = $src;
+    $this->vocabularies       = array();
+    $this->leaves_only        = $leaves_only;
+    $this->min_length         = $min_length;
+    $this->max_length         = $max_length;
+    $this->initialize_regex();
+
+    $this->use_tooltips       = $use_tooltips;
+    $this->selected_only      = $selected_only;
+    $this->use_synonyms       = $use_synonyms;
+    $this->excluded_tags      = $this->extract_words_as_keys(drupal_strtolower($excluded_tags));
+    $this->excluded_words     = $this->extract_words($excluded_words, $this->min_length, $this->max_length);
+    $this->excluded_classes   = $this->extract_words_as_keys(drupal_strtolower($excluded_classes));
+    $this->use_synonyms_real  = ($this->use_synonyms && db_table_exists('field_data_synonyms_synonyms'));
 
     $this->callbacks->parse_fragment = array(&$this, 'parse_fragment');
     $this->callbacks->parse_sentence = array(&$this, 'parse_sentence');
 
     foreach($vocs as $vid => $name) {
-      if ($name) {
-        $this->vocabularies[] = $vid;
-      }
+      if ($name) { $this->vocabularies[] = $vid; }
     }
 
     $this->load_taxonomy();
   }
 
-  private function load_taxonomy() {
-    $this->use_synonyms_real = ($this->use_synonyms && db_table_exists('field_data_synonyms_synonyms'));
-    $cache_key = '-' . $this->min_length    . '-' . $this->max_length         .
-                 '-' . $this->leaves_only   . '-' . $this->selected_only      .
-                 '-' . $this->use_tooltips  . '-' . $this->use_synonyms_real  .
-                 '-' . implode(':', $this->excluded_words)  .
-                 '-' . implode(':', $this->vocabularies);
+  private function initialize_regex() {
+    static $re_full_stop      = NULL;                             // full-stop symbols
+    static $re_sent_end       = NULL;                             // end of a sentence
+    static $re_gen_sent_beg   = NULL;                             // generic word that starts a sentence
+    static $re_gen_words      = NULL;                             // generic words matcher
+    static $re_wordchr        = '[\pL\p{Pc}\p{Pd}\pN\/]';         // single word character
+    static $re_nonwordchr     = '[^\pL\p{Pc}\p{Pd}\pN\/]';        // single non-word character
+    static $re_wordchr_ucf    = '\p{Lu}+[\pL\p{Pc}\p{Pd}\pN\/]';  // capitalized word
+    
+    
+    
+    static $re_text_beg     = '^[\p{Zl}\p{Zp}\p{Zs}]*';         // beginning of a sentence
+    
+    
+    if ($re_full_stop === NULL) {
+      $re_full_stop = '[\x{00021}\x{0002E}\x{0003F}\x{00589}\x{0061F}\x{006D4}\x{00700}\x{00701}\x{00702}\x{007F9}' .
+                      '\x{00964}\x{00965}\x{0104A}\x{0104B}\x{01362}\x{01367}\x{01368}\x{0166E}\x{01803}\x{01809}' .
+                      '\x{01944}\x{01945}\x{01AA8}\x{01AA9}\x{01AAA}\x{01AAB}\x{01B5A}\x{01B5B}\x{01B5E}\x{01B5F}' .
+                      '\x{01C3B}\x{01C3C}\x{01C7E}\x{01C7F}\x{0203C}\x{0203D}\x{02047}\x{02048}\x{02049}\x{02E2E}' .
+                      '\x{03002}\x{0A4FF}\x{0A60E}\x{0A60F}\x{0A6F3}\x{0A6F7}\x{0A876}\x{0A877}\x{0A8CE}\x{0A8CF}' .
+                      '\x{0A92F}\x{0A9C8}\x{0A9C9}\x{0AA5D}\x{0AA5E}\x{0AA5F}\x{0AAF0}\x{0AAF1}\x{0ABEB}\x{0FE52}' .
+                      '\x{0FE56}\x{0FE57}\x{0FF01}\x{0FF0E}\x{0FF1F}\x{0FF61}\x{11047}\x{11048}\x{110BE}\x{110BF}' .
+                      '\x{110C0}\x{110C1}\x{11141}\x{11142}\x{11143}\x{111C5}\x{111C6}\x{02026}\x{022EE}\x{022EF}' .
+                      '\x{00EAF}\x{01801}]+';
+        //$re_full_stop = '\.';
+    }
 
-    if (self::$taxonomy_sum === $cache_key) { return; }
-    self::$taxonomy = array();
-    self::$tooltips = array();
+    if ($re_sent_end === NULL) {
+      $re_sent_end = $re_full_stop . '[\p{Zl}\p{Zp}\p{Zs}]+';
+    }
+    
+    if ($re_gen_sent_beg === NULL) {
+      $re_gen_sent_beg =  '(' . $re_text_beg . '|' . $re_sent_end . ')(' . $re_wordchr_ucf . '*)';
+    }
+
+    if ($re_gen_words === NULL) {
+      $re_gen_words = '/(' . $re_gen_sent_beg. ')|(' . $re_wordchr . '+)/u';
+    }
+
+    $ucf_min_length  = $this->min_length - 1;
+    $ucf_max_length  = $this->max_length - 1;
+    if ($ucf_min_length < 0) { $ucf_min_length = 0; }
+    if ($ucf_max_length < 0) { $ucf_max_length = 0; }
+
+    // instance-specific mappings
+    $re_word         = $re_wordchr          . '{' . $this->min_length   . ',' . $this->max_length . '}';  // single word
+    $re_word_ucf     = $re_wordchr_ucf      . '{' . $ucf_min_length     . ',' . $ucf_max_length   . '}';  // Capitalized word
+    $re_sent_beg     = '('  . $re_text_beg  . '|' . $re_sent_end . ')(' . $re_word_ucf . ')';             // sentence start
+
+    // regular expression exports
+    $this->re->words = '/(' . $re_sent_beg . ')|(' . $re_word    . ')/u';   // words matcher
+    $this->re->word_split = '/' . $re_nonwordchr . '+/u';                   // word-splitter matcher
+    //$this->re->term_before = '/(' . $re_nonwordchr . '+)(';
+    //$this->re->//static $pa_wordsplit_end = ')($|[^\pL\p{Pc}\p{Pd}\pN\/]+)/u';
+  }
+
+  private function &taxonomy() {
+    return self::$taxonomy[$this->taxonomy_cache_key];
+  }
+
+  private function &tooltips() {
+    return self::$tooltips[$this->taxonomy_cache_key];
+  }
+
+  private function taxonomy_generate_cache_key() {
+    $this->taxonomy_cache_key =
+      '-' . $this->min_length    .
+      '-' . $this->max_length    . 
+      '-' . $this->leaves_only   . '-' . $this->selected_only      .
+      '-' . $this->use_tooltips  . '-' . $this->use_synonyms_real  .
+      '-' . implode(':', $this->excluded_words) .
+      '-' . implode(':', $this->vocabularies);
+    return $this->taxonomy_cache_key;
+  }
+
+  private function load_taxonomy() {
+    $ckey = $this->taxonomy_generate_cache_key();
+    self::$taxonomy[$ckey] = array();
+    self::$tooltips[$ckey] = array();
 
     // Query for taxonomy terms.
     $query = new EntityFieldQuery;
@@ -443,24 +515,25 @@ class AutolinkFilterParser {
       }
     }
 
-    self::$taxonomy_sum = $cache_key;
-    unset($terms, $tterms, $synonyms, $synonym_name, $term, $query, $tip, $cache_key, $tids, $name, $name_length, $tidgroups);
+    unset($terms, $tterms, $synonyms, $synonym_name, $term, $query, $tip, $ckey, $tids, $name, $name_length, $tidgroups);
   }
 
   private function memorize_term_data($term, $use_name = FALSE) {
+    $tax  = &$this->taxonomy();
+    $tips = &$this->tooltips();
     if ($use_name === FALSE) { $use_name = $term->name; }
     if ($this->use_synonyms_real) {
       $l = drupal_strlen($use_name);
       if ($l < $this->min_length || $l > $this->max_length) { return; }
-      if (array_key_exists($use_name, self::$taxonomy))     { return; }
+      if (array_key_exists($use_name, $tax)) { return; }
     }
-    self::$taxonomy[$use_name] = $term->tid;
+    $tax[$use_name] = $term->tid;
     if ($this->use_tooltips && isset($term->autolink_tooltip)) {
-      if (!array_key_exists($term->tid, self::$tooltips)) {
-        self::$tooltips[$term->tid] = array('tip' => $term->autolink_tooltip, 'orig' => $term->name);
+      if (!array_key_exists($term->tid, $tips)) {
+        $tips[$term->tid] = array('tip' => $term->autolink_tooltip, 'orig' => $term->name);
       }
     }
-    unset($l, $term, $use_name, $orign);
+    unset($l, $term, $use_name, $orign, $tax, $tips);
   }
 
   private function extract_synonyms($term) {
@@ -479,9 +552,8 @@ class AutolinkFilterParser {
   }
 
   private function extract_words($text, $minlength = 0, $maxlength = 0) {
-    static $re_wordsplit = '/[^\pL\p{Pc}\p{Pd}\pN\/]+/u';
     if (($minlength + $maxlength) === 0) {
-      return array_filter(preg_split($re_wordsplit, $text));
+      return array_filter(preg_split($this->re->word_split, $text));
     }
     else {
       $r = $this->extract_words($text);
@@ -523,32 +595,37 @@ class AutolinkFilterParser {
   }
 
   public function parse() {
-    static $re_words = '/[\pL\p{Pc}\p{Pd}\pN\/]+/u';
     static $pa_wordsplit_beg = '/(^|[^\pL\p{Pc}\p{Pd}\pN\/]+)(';
     static $pa_wordsplit_end = ')($|[^\pL\p{Pc}\p{Pd}\pN\/]+)/u';
+
+    $tax = &$this->taxonomy();
     $this->changed = FALSE;
     $this->used_tips = array();
     $this->html = new simple_html_dom();
     $this->html->load($this->src, true, false);
     
-    // Step I - parse terms that have multiple words.
-    foreach (self::$taxonomy as $term => $tid) {
-      if(strpos($term, ' ') !== FALSE) {
-        foreach ($this->html->find('text') as $fragment) {
-          if (!$this->in_excluded_tag($fragment)) {
-            $rgx = $pa_wordsplit_beg . preg_quote($term) . $pa_wordsplit_end; // todo: add some chunking here and joint regex
-            $fragment->innertext = preg_replace_callback($rgx, $this->callbacks->parse_sentence, $fragment->innertext);
-          }
-        }
-      }
-    }
-
-    if ($this->changed) { $this->html->load($this->html->save()); }
+    //// Step I - parse terms that have multiple words.
+    //foreach ($tax as $term => $tid) {
+    //  if(strpos($term, ' ') !== FALSE) {
+    //    
+    //    // todo: that (generating lower/upper) should be done only if it's a beginning of a new sentence or a line
+    //    //       rewrite regex into two and add case variants
+    //    $rgx = $pa_wordsplit_beg . $this->generate_term_regex($term) . $pa_wordsplit_end;
+    //    // todo: add some chunking here and joint regex
+    //    foreach ($this->html->find('text') as $fragment) {
+    //      if (!$this->in_excluded_tag($fragment)) {
+    //        $fragment->innertext = preg_replace_callback($rgx, $this->callbacks->parse_sentence, $fragment->innertext);
+    //      }
+    //    }
+    //  }
+    //}
+    //
+    //if ($this->changed) { $this->html->load($this->html->save()); }
 
     // Step II - parse terms that are single words.
     foreach ($this->html->find('text') as $fragment) {
       if (!$this->in_excluded_tag($fragment)) {
-        $fragment->innertext = preg_replace_callback($re_words, $this->callbacks->parse_fragment, $fragment->innertext);
+        $fragment->innertext = preg_replace_callback($this->re->words, $this->callbacks->parse_fragment, $fragment->innertext);
       }
     }
 
@@ -566,15 +643,46 @@ class AutolinkFilterParser {
     return $out;
   }
 
+  private function generate_term_regex($name) {
+    $l = drupal_substr($name, 0, 1);
+    return '[' . preg_quote(drupal_strtolower($l)) . preg_quote(drupal_strtoupper($l)) . ']' .
+           preg_quote(drupal_substr($name, 1));
+  }
+
   private function parse_fragment($matches) {
     if (!isset($matches[0])) { return ''; }
-    $word = $matches[0];
-    if (array_key_exists($word, self::$taxonomy)) {
-      return $this->generate_link($word);
+    $tax  = &$this->taxonomy();
+    $word = '';
+    $pref = '';
+
+    // upper-case word at the beginning of a sentence
+    if (!empty($matches[3])) {
+      $word = $matches[3];
+      $pref = $matches[2];
+      if (array_key_exists($this->lcfirst($word), $tax)) {
+        return $pref . $this->generate_link($word);
+      }
+    } //  word inside a sentence
+    elseif (!empty($matches[4])) {
+      $word = $matches[4]; // was 1
     }
-    else {
-      return $word;
+    else { return $matches[0]; }
+
+    if (array_key_exists($word, $tax)) {
+      return $pref . $this->generate_link($word);
     }
+
+    return $matches[0];
+  }
+
+  private function ucfirst($name) {
+    return drupal_strtoupper(drupal_substr($name, 0, 1)) .
+           drupal_substr($name, 1);
+  }
+
+  private function lcfirst($name) {
+    return drupal_strtolower(drupal_substr($name, 0, 1)) .
+           drupal_substr($name, 1);
   }
 
   private function parse_sentence($matches) {
@@ -584,8 +692,10 @@ class AutolinkFilterParser {
 
   private function generate_link($word) {
     if (!$this->changed) { $this->changed = TRUE; }
-    $tid = self::$taxonomy[$word];
-    $tip = array_key_exists($tid, self::$tooltips) ? self::$tooltips[$tid]['tip'] : '';
+    $tax  = &$this->taxonomy();
+    $tips = &$this->tooltips();
+    $tid = $tax[$word];
+    $tip = array_key_exists($tid, $tips) ? $tips[$tid]['tip'] : '';
     $tiprefstring = '';
     if ($this->use_tooltips && !empty($tip)) {
       if (!array_key_exists($tid, $this->used_tips)) {
@@ -602,14 +712,15 @@ class AutolinkFilterParser {
     $r = "\n" . '<!-- tooltips -->' . "\n";
     $r .= '<div id="tooltips-container" style="display:none;">' . "\n";
     $r .= '<p>Tooltips:</p>' . "\n";
+    $tips = &$this->tooltips();
     foreach($this->used_tips as $name => $tid) {
-      $orign = self::$tooltips[$tid]['orig'];
+      $orign = $tips[$tid]['orig'];
       $th = $name;
       if ($orign !== $name) {
         $th .= ' ' . t('(i.e. @original_term)', array('@original_term' => $orign));
       }
       $r .= '  ' . '<h3 class="tooltip-header">' . $th . '</h3>' . "\n";
-      $r .= '  <div id="tooltip-def-' . $tid . '">' . self::$tooltips[$tid]['tip'];
+      $r .= '  <div id="tooltip-def-' . $tid . '">' . $tips[$tid]['tip'];
       $r .= '  </div>' . "\n";
     }
     $r .= "</div>\n<!--eof tooltips -->\n";
