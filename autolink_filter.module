@@ -27,7 +27,7 @@ function autolink_filter_filter_info() {
   $excluded_words   = 'or of for while because and but no yes though they i you he she it since are were have had been m very' . 
                       'less also to too then when off over';
   $filters['autolink_filter'] = array(
-    'title'             => t('Automatically link keywords from vocabularies'),
+    'title'             => t('Auto-link keywords'),
     'process callback'  => '_autolink_filter_process_filter',
     'settings callback' => '_autolink_filter_settings',
     'weight'            => 50,
@@ -37,6 +37,8 @@ function autolink_filter_filter_info() {
       'excluded_words'  => $excluded_words,
       'vocabularies'    => _autolink_filter_vocab_array(),
       'processing_options' => array('use_tooltips', 'use_synonyms'),
+      'max_terms'       => 4,
+      'max_words'       => 1,
       'min'             => 2,
       'max'             => 32,
     ),
@@ -78,7 +80,7 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
     'reminder' => array(
       '#type'   => 'item',
       '#title'  => t('In most cases, Autolink Filter should be the <em>last</em> filter in the &ldquo;Filter processing order&rdquo; list. It is also recommended to run &ldquo;@htmlcorrector_name&rdquo; after this filter, when tooltips are in use.', array('@htmlcorrector_name' => t('Correct faulty and chopped off HTML'))),
-      '#weight' => -20,
+      '#weight' => -40,
     ),
     'processing_options' => array(
       '#type'           => 'checkboxes',
@@ -86,7 +88,7 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
       '#position'       => 'left',
       '#options'        => _autolink_filter_processing_options_array(),
       '#default_value'  => $filter->settings['processing_options'],
-      '#weight'         => -5,
+      '#weight'         => -30,
       '#description'    => t('Select desirable processing options.'),
     ),
     'excluded_tags' => array(
@@ -94,7 +96,7 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
       '#title'          => t('HTML tags excluded from processing'),
       '#default_value'  => $filter->settings['excluded_tags'],
       '#size'           => '63',
-      '#weight'         => -10,
+      '#weight'         => -20,
       '#description'    => t('Enter HTML tag names (separated by spaces and/or commas) for which a content (contained within) will not be processed.'),
     ),
     'excluded_classes' => array(
@@ -102,7 +104,7 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
       '#title'          => t('HTML classes excluded from processing'),
       '#default_value'  => $filter->settings['excluded_classes'],
       '#size'           => '63',
-      '#weight'         => -8,
+      '#weight'         => -10,
       '#description'    => t('Enter HTML class attribute values (separated by spaces and/or commas) for which a content (contained within) will not be processed.'),
     ),
     'excluded_words' => array(
@@ -110,7 +112,7 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
       '#title'          => t('Words excluded from processing'),
       '#default_value'  => $filter->settings['excluded_words'],
       '#size'           => '63',
-      '#weight'         => -7,
+      '#weight'         => -8,
       '#description'    => t('Enter words (separated by spaces and/or commas) which won\'t be processed.'),
     ),
     'min'               => array(
@@ -120,7 +122,7 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
       '#size'           => '3',
       '#maxlength'      => '4',
       '#element_validate' => array('_autolink_filter_length_validate'),
-      '#weight'         => -4,
+      '#weight'         => -6,
       '#description'    => t('The minimum acceptable number of letters in a word to be processed (@min to @max)',
                             array('@min' => 0, '@max' => 32)),
     ),
@@ -131,9 +133,29 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
       '#size'           => '3',
       '#maxlength'      => '4',
       '#element_validate' => array('_autolink_filter_length_validate'),
-      '#weight'         => -2,
+      '#weight'         => -4,
       '#description'    => t('The maximum acceptable number of letters in a word to be processed (@min to @max)',
                             array('@min' => 1, '@max' => 32)),
+    ),
+    'max_terms'         => array(
+      '#type'           => 'textfield',
+      '#title'          => t('Maximum number of instances of the same term (including synonyms) to be linked'),
+      '#default_value'  => $filter->settings['max_terms'],
+      '#size'           => '3',
+      '#maxlength'      => '4',
+      '#element_validate' => array('_autolink_filter_length_validate'),
+      '#weight'         => -2,
+      '#description'    => t('The maximum acceptable number of term instances to be processed (0 disables the limit)'),
+    ),
+      'max_words'       => array(
+      '#type'           => 'textfield',
+      '#title'          => t('Maximum number of instances of the same word to be linked'),
+      '#default_value'  => $filter->settings['max_words'],
+      '#size'           => '3',
+      '#maxlength'      => '4',
+      '#element_validate' => array('_autolink_filter_length_validate'),
+      '#weight'         => -1,
+      '#description'    => t('The maximum acceptable number of word instances to be processed (0 disables the limit)'),
     ),
     'vocabularies' => array(
       '#type'           => 'checkboxes',
@@ -142,7 +164,7 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
       '#options'        => _autolink_filter_vocab_array(),
       '#default_value'  => $filter->settings['vocabularies'],
       '#weight'         => 0,
-      '#description'    => t('Select taxonomy vocabularies used to automatically link keywords.'),
+      '#description'    => t('Select taxonomy vocabularies used to seek for linked keywords.'),
     )
   );
 }
@@ -152,27 +174,35 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
  */
 function _autolink_filter_length_validate($element, $form_state, $form) {
   if (!empty($element['#value']) && !is_numeric($element['#value'])) {
-    form_error($element, $element['#title'] . ' ' . t('should only contain numbers.'));
+    form_error($element, t('@element should only contain numbers.', array('@element' => $element['#title'])));
   }
 
   settype($element['#value'], 'integer');
   $val = $element['#value'];
-  $errv = FALSE;
-  if ($val > 32) {
-    $errv = 'should not be greater than 32';
+  $errmin = FALSE;
+  $errmax = FALSE;
+
+  switch(end($element['#array_parents'])) {
+    case 'min':
+      if ($val < 0)  { $errmin = 0;  }
+      if ($val > 32) { $errmax = 32; }
+      break;
+    case 'max':
+      if ($val < 1)  { $errmin = 1;  }
+      if ($val > 32) { $errmax = 32; }
+      break;
+    case 'max_terms':
+      break;
+      if ($val < 0) { $errmin = 0; }
+    case 'max_words':
+      if ($val < 0) { $errmin = 0; }
+      break;
   }
-  else {
-    switch(end($element['#array_parents'])) {
-      case 'min':
-        if ($val < 0) { $errv = 0; }
-        break;
-      case 'max':
-        if ($val < 1) { $errv = 1; }
-        break;
-    }
-    if ($errv !== FALSE) { $errv = t('should be equal or greater than') . ' ' . $errv; }
-  }
-  if ($errv !== FALSE) { form_error($element, $element['#title'] . ' ' . $errv . '.'); }
+
+  if ($errmin !== FALSE) { form_error($element, t('@element should be equal or greater than @value',
+                                                  array('@value' => $errmin, '@element' => $element['#title']))); }
+  if ($errmax !== FALSE) { form_error($element, t('@element should not be greater than @value',
+                                                  array('@value' => $errmax, '@element' => $element['#title']))); }
 }
 
 /**
@@ -182,6 +212,8 @@ function _autolink_filter_process_filter($text, $filter) {
   $s                  = $filter->settings;
   $min                = $s['min'];
   $max                = $s['max'];
+  $max_terms          = $s['max_terms'];
+  $max_words          = $s['max_words'];
   $vocs               = $s['vocabularies'];
   $excl_tags          = $s['excluded_tags'];
   $excl_words         = $s['excluded_words'];
@@ -201,11 +233,15 @@ function _autolink_filter_process_filter($text, $filter) {
   if (!isset($selected_only))                         { $selected_only = NULL; }
   if (!isset($use_tooltips))                          { $use_tooltips  = NULL; }
   if (!isset($use_synonyms))                          { $use_synonyms  = NULL; }
+
+  if (!is_integer($max_terms))                        { settype($max_terms, 'integer'); }
+  if (!is_integer($max_words))                        { settype($max_words, 'integer'); }
   if (!is_integer($min))                              { settype($min, 'integer'); }
   if (!is_integer($max))                              { settype($max, 'integer'); }
 
   $parser = new AutolinkFilterParser($text, $vocs, $excl_tags, $excl_classes, $excl_words, $min, $max,
-                                     $leaves_only, $use_tooltips, $selected_only, $use_synonyms);
+                                     $leaves_only, $use_tooltips, $selected_only, $use_synonyms,
+                                     $max_terms, $max_words);
 
   $r = $parser->parse();
   $parser->clear();
@@ -326,7 +362,8 @@ class AutolinkFilterParser {
   private $selected_only;     // require field_autolink to be true
   private $use_synonyms;      // uses synonyms
   private $changed;           // internal change marker
-  private $used_tips;         // used term ID-s
+  private $used_terms;        // used term ID-s
+  private $used_words;        // used term names (including synonyms)
   private $use_synonyms_real; // deduced ability to use synonyms
   private $taxonomy_cache_key;// taxonomy cache key for current instance
   private $callbacks;         // arrays for preg_replace method with callback method names
@@ -340,7 +377,7 @@ class AutolinkFilterParser {
 
   function __construct($src, $vocs, $excluded_tags = '', $excluded_classes = '', $excluded_words = '', $min_length = 0,
                        $max_length = 0, $leaves_only = FALSE, $use_tooltips = TRUE, $selected_only = FALSE,
-                       $use_synonyms = 1) {
+                       $use_synonyms = 1, $max_terms = 0, $max_words = 0) {
 
     if (is_null($vocs))             { $vocs = array();              }
     if (is_null($excluded_tags))    { $excluded_tags    = array();  }
@@ -351,9 +388,12 @@ class AutolinkFilterParser {
     if (is_null($use_tooltips))     { $use_tooltips     = FALSE;    }
     if (is_null($use_synonyms))     { $use_synonyms     = FALSE;    }
 
-    if (!is_numeric($min_length) || $min_length < 0)    { $min_length = 0;  }
-    if (!is_numeric($max_length) || $max_length < 0)    { $max_length = 0;  }
-    if ($min_length > 255)  { $min_length = 255; }
+    if (!is_numeric($min_length) || $min_length < 0) { $min_length = 0; }
+    if (!is_numeric($max_length) || $max_length < 0) { $max_length = 0; }
+    if (!is_numeric($max_terms)  || $max_terms  < 0) { $max_terms  = 0; }
+    if (!is_numeric($max_words)  || $max_words  < 0) { $max_words  = 0; }
+    
+    if ($min_length > 255) { $min_length = 255; }
     if ($max_length == 0 || $max_length > 255) { $max_length = 255; }
     if ($min_length > $max_length) { $min_length = $max_length; }
 
@@ -362,6 +402,8 @@ class AutolinkFilterParser {
     $this->leaves_only        = $leaves_only;
     $this->min_length         = $min_length;
     $this->max_length         = $max_length;
+    $this->max_terms          = $max_terms;
+    $this->max_words          = $max_words;
     $this->initialize_regex();
 
     $this->use_tooltips       = $use_tooltips;
@@ -383,51 +425,38 @@ class AutolinkFilterParser {
   }
 
   private function initialize_regex() {
-    static $re_full_stop                  = NULL;                             // full-stop symbols
-    static $re_sentence_end               = NULL;                             // end of a sentence
-    static $re_gen_word_first_in_sentence = NULL;                             // generic word that starts a sentence
-    static $re_gen_words                  = NULL;                             // generic words matcher
-    static $re_non_word                   = NULL;                             // non-word
-    static $re_term_prefix_uppercased     = NULL;                             // term-matching prefix (capital first letter)
-    static $re_letter                     = '[\pL\p{Pc}\p{Pd}\pN\/]';         // single word character
-    static $re_letter_uppercase           = '\p{Lu}';                         // capital word character
-    static $re_non_letter                 = '[^\pL\p{Pc}\p{Pd}\pN\/]';        // single non-word character
-    static $re_sentence_start             = '^[\p{Zl}\p{Zp}\p{Zs}]*';         // beginning of a sentence
+    static $re_full_stop          = NULL;                       // full-stop symbols
+    static $re_sentence_end       = NULL;                       // end of a sentence
+    static $re_gen_word_opening   = NULL;                       // generic word that starts a sentence
+    static $re_gen_words          = NULL;                       // generic words matcher
+    static $re_non_word           = NULL;                       // non-word
+    static $re_term_prefix_up     = NULL;                       // term-matching prefix (capital first letter)
+    static $re_letter             = '[\pL\p{Pc}\p{Pd}\pN\/]';   // single word character
+    static $re_letter_uppercase   = '\p{Lu}';                   // capital word character
+    static $re_non_letter         = '[^\pL\p{Pc}\p{Pd}\pN\/]';  // single non-word character
+    static $re_sentence_start     = '^[\p{Zl}\p{Zp}\p{Zs}]*';   // beginning of a sentence
     
 
     if ($re_full_stop === NULL) {
       $re_full_stop = '[\x{00021}\x{0002E}\x{0003F}\x{00589}\x{0061F}\x{006D4}\x{00700}\x{00701}\x{00702}\x{007F9}' .
-                      '\x{00964}\x{00965}\x{0104A}\x{0104B}\x{01362}\x{01367}\x{01368}\x{0166E}\x{01803}\x{01809}' .
-                      '\x{01944}\x{01945}\x{01AA8}\x{01AA9}\x{01AAA}\x{01AAB}\x{01B5A}\x{01B5B}\x{01B5E}\x{01B5F}' .
-                      '\x{01C3B}\x{01C3C}\x{01C7E}\x{01C7F}\x{0203C}\x{0203D}\x{02047}\x{02048}\x{02049}\x{02E2E}' .
-                      '\x{03002}\x{0A4FF}\x{0A60E}\x{0A60F}\x{0A6F3}\x{0A6F7}\x{0A876}\x{0A877}\x{0A8CE}\x{0A8CF}' .
-                      '\x{0A92F}\x{0A9C8}\x{0A9C9}\x{0AA5D}\x{0AA5E}\x{0AA5F}\x{0AAF0}\x{0AAF1}\x{0ABEB}\x{0FE52}' .
-                      '\x{0FE56}\x{0FE57}\x{0FF01}\x{0FF0E}\x{0FF1F}\x{0FF61}\x{11047}\x{11048}\x{110BE}\x{110BF}' .
-                      '\x{110C0}\x{110C1}\x{11141}\x{11142}\x{11143}\x{111C5}\x{111C6}\x{02026}\x{022EE}\x{022EF}' .
+                      '\x{00964}\x{00965}\x{0104A}\x{0104B}\x{01362}\x{01367}\x{01368}\x{0166E}\x{01803}\x{01809}'  .
+                      '\x{01944}\x{01945}\x{01AA8}\x{01AA9}\x{01AAA}\x{01AAB}\x{01B5A}\x{01B5B}\x{01B5E}\x{01B5F}'  .
+                      '\x{01C3B}\x{01C3C}\x{01C7E}\x{01C7F}\x{0203C}\x{0203D}\x{02047}\x{02048}\x{02049}\x{02E2E}'  .
+                      '\x{03002}\x{0A4FF}\x{0A60E}\x{0A60F}\x{0A6F3}\x{0A6F7}\x{0A876}\x{0A877}\x{0A8CE}\x{0A8CF}'  .
+                      '\x{0A92F}\x{0A9C8}\x{0A9C9}\x{0AA5D}\x{0AA5E}\x{0AA5F}\x{0AAF0}\x{0AAF1}\x{0ABEB}\x{0FE52}'  .
+                      '\x{0FE56}\x{0FE57}\x{0FF01}\x{0FF0E}\x{0FF1F}\x{0FF61}\x{11047}\x{11048}\x{110BE}\x{110BF}'  .
+                      '\x{110C0}\x{110C1}\x{11141}\x{11142}\x{11143}\x{111C5}\x{111C6}\x{02026}\x{022EE}\x{022EF}'  .
                       '\x{00EAF}\x{01801}]+';
         //$re_full_stop = '\.';
     }
 
-    if ($re_sentence_end === NULL) {
-      $re_sentence_end = $re_full_stop . '[\p{Zl}\p{Zp}\p{Zs}]+';
-    }
-    
-    if ($re_gen_word_first_in_sentence === NULL) {
-      $re_gen_word_first_in_sentence =  '(' . $re_sentence_start . '|' . $re_sentence_end . ')' .
-                                        '(' . $re_letter_uppercase . $re_letter . '*)';
-    }
-
-    if ($re_gen_words === NULL) {
-      $re_gen_words = '/(' . $re_gen_word_first_in_sentence. ')|(' . $re_letter . '+)/um';
-    }
-
-    if ($re_non_word === NULL) {
-      $re_non_word = $re_non_letter . '+';
-    }
-
-    if ($re_term_prefix_uppercased === NULL) {
-      $re_term_prefix_uppercased  = '(' . $re_sentence_start  . '|' . $re_sentence_end . ')';
-    }
+    // set complex static variables
+    if (is_null($re_sentence_end))      { $re_sentence_end      =        $re_full_stop        . '[\p{Zl}\p{Zp}\p{Zs}]+';      }
+    if (is_null($re_gen_word_opening))  { $re_gen_word_opening  =  '(' . $re_sentence_start   . '|' . $re_sentence_end . ')' .
+                                                                   '(' . $re_letter_uppercase .         $re_letter    . '*)'; }
+    if (is_null($re_gen_words))         { $re_gen_words         = '/(' . $re_gen_word_opening . ')|(' . $re_letter . '+)/um'; }
+    if (is_null($re_non_word))          { $re_non_word          =        $re_non_letter       . '+';                          }
+    if (is_null($re_term_prefix_up))    { $re_term_prefix_up    = '('  . $re_sentence_start   . '|' . $re_sentence_end . ')'; }
 
     // recalculate maximum and minimum lengths for patterns that "eat" one letter
     $ucf_min_length = $this->min_length - 1;
@@ -436,16 +465,16 @@ class AutolinkFilterParser {
     if ($ucf_max_length < 0) { $ucf_max_length = 0; }
 
     // instance-specific matchers
-    $re_word                    = $re_letter                        . '{' . $this->min_length   . ',' . $this->max_length . '}';
-    $re_word_titlecase          = $re_letter_uppercase . $re_letter . '{' . $ucf_min_length     . ',' . $ucf_max_length   . '}';
-    $re_word_at_sentence_start  = '(' . $re_sentence_start  . '|' . $re_sentence_end . ')(' . $re_word_titlecase . ')';
+    $re_word                    = $re_letter                        . '{' . $this->min_length  . ','  . $this->max_length  . '}';
+    $re_word_titlecase          = $re_letter_uppercase . $re_letter . '{' . $ucf_min_length    . ','  . $ucf_max_length    . '}';
+    $re_word_at_sentence_start  = '(' . $re_sentence_start          . '|' . $re_sentence_end   . ')(' . $re_word_titlecase . ')';
 
     // regular expression exports
-    $this->re->words        = '/('   . $re_word_at_sentence_start . ')|(' . $re_word    . ')/um'; // words matcher
-    $this->re->word_split   = '/'    . $re_non_word . '/u';                                       // word-splitter matcher
-    $this->re->terms_before = '/('   . $re_term_prefix_uppercased . '(';                          // terms catcher before
-    $this->re->terms_middle = '))|(('. $re_non_word . ')(';                                       // terms catcher second
-    $this->re->terms_after  = ')('   . $re_non_word .  '))/um';                                   // terms catcher final
+    $this->re->words        = '/('    . $re_word_at_sentence_start . ')|(' . $re_word  . ')/um'; // words matcher
+    $this->re->word_split   = '/'     . $re_non_word . '/u';                                     // word-splitter matcher
+    $this->re->terms_before = '/('    . $re_term_prefix_up . '(';                                // terms catcher before
+    $this->re->terms_middle = '))|((' . $re_non_word . ')(';                                     // terms catcher second
+    $this->re->terms_after  = ')('    . $re_non_word .  '))/um';                                 // terms catcher final
   }
 
   private function &taxonomy() {
@@ -564,6 +593,7 @@ class AutolinkFilterParser {
     $tax  = &$this->taxonomy();
     $ltax = &$this->long_terms();
     $tips = &$this->tooltips();
+
     if ($use_name === FALSE) { $use_name = $term->name; }
     if ($this->use_synonyms_real) {
       $l = drupal_strlen($use_name);
@@ -572,9 +602,10 @@ class AutolinkFilterParser {
     }
     $tax[$use_name] = $term->tid;
     if (strpos($use_name, ' ')) { $ltax[] = $use_name; }
-    if ($this->use_tooltips && isset($term->autolink_tooltip)) {
+    if ($this->use_tooltips && !empty($term->autolink_tooltip)) {
       if (!array_key_exists($term->tid, $tips)) {
-        $tips[$term->tid] = array('tip' => $term->autolink_tooltip, 'orig' => $term->name);
+        dpm($term->name);
+        $tips[$term->tid] = array('tip' => $term->autolink_tooltip, 'name' => $this->ucfirst($term->name));
       }
     }
     unset($l, $term, $use_name, $orign, $tax, $ltax, $tips);
@@ -642,11 +673,11 @@ class AutolinkFilterParser {
     $tax  = &$this->taxonomy();
     $ltax = &$this->long_terms();
     $this->changed = FALSE;
-    $this->used_tips = array();
+    $this->used_terms = array();
+    $this->used_words = array();
     $this->html = new simple_html_dom();
     $this->html->load($this->src, true, false);
 
-    
     // Step I - parse terms that have multiple words.
     foreach ($this->html->find('text') as $fragment) {
       if ($this->in_excluded_tag($fragment)) { continue; }
@@ -677,7 +708,7 @@ class AutolinkFilterParser {
       $out = $this->src;
     }
     $this->html->clear();
-    unset($this->html, $fragment, $vid, $vname, $term, $tax, $ltax, $rgx, $terms_regex);
+    unset($this->html, $this->used_terms, $this->used_words, $fragment, $vid, $vname, $term, $tax, $ltax, $rgx, $terms_regex);
     return $out;
   }
 
@@ -748,45 +779,48 @@ class AutolinkFilterParser {
   }
 
   private function generate_link($word, $orig = NULL) {
-    if (!$this->changed) { $this->changed = TRUE; }
-    $tax  = &$this->taxonomy();
-    $tips = &$this->tooltips();
+    $tax = &$this->taxonomy();
     if (is_null($orig)) { $orig = $word; }
-    $tid  = $tax[$orig];
-    $tip  = array_key_exists($tid, $tips) ? $tips[$tid]['tip'] : '';
+    $tid = $tax[$orig];
+
+    $this->used_terms[$tid]  = !array_key_exists($tid,  $this->used_terms) ? 1 : $this->used_terms[$tid]  + 1;
+    $this->used_words[$orig] = !array_key_exists($orig, $this->used_words) ? 1 : $this->used_words[$orig] + 1;
+    
+    if ($this->max_terms > 0 && $this->used_terms[$tid]  > $this->max_terms) { return $word; }    
+    if ($this->max_words > 0 && $this->used_words[$orig] > $this->max_words) { return $word; }
+
+    $tips = &$this->tooltips();
     $tiprefstring = '';
-    if ($this->use_tooltips && !empty($tip)) {
-      if (!array_key_exists($orig, $this->used_tips)) {
-        $this->used_tips[$orig] = $tid;
-      }
+    if ($this->use_tooltips && array_key_exists($tid, $tips)) {
       $tiprefstring = 'id="tooltip-ref-' . $tid . '"';
     }
-    unset($tip);
+
+    if (!$this->changed) { $this->changed = TRUE; }
+
     return '<a href="' . url('taxonomy/term/' . $tid) . '" title="' . $orig . '" ' .
            'class="taxonomy-autolink"' . $tiprefstring . '>' . $word . '</a>';
   }
 
   private function generate_tooltips() {
-    $r = "\n" . '<!-- tooltips -->' . "\n";
+    $tips = &$this->tooltips();
+    $r  = "\n" . '<!-- tooltips -->' . "\n";
     $r .= '<div id="tooltips-container" style="display:none;">' . "\n";
     $r .= '<p>Tooltips:</p>' . "\n";
-    $tips = &$this->tooltips();
-    foreach($this->used_tips as $name => $tid) {
-      $orign = $tips[$tid]['orig'];
-      $th = $name;
-      if (drupal_strtolower($orign) !== drupal_strtolower($name)) {
-        $th .= ' ' . t('(orig. @original_term)', array('@original_term' => $orign));
+    foreach($this->used_terms as $tid => $count) {
+      if (array_key_exists($tid, $tips)) {
+        $tip = $tips[$tid];
+        $r  .= '  ' . '<h3 class="tooltip-header">' . $tip['name'] . '</h3>' . "\n";
+        $r  .= '  <div id="tooltip-def-' . $tid . '">' . $tip['tip'];
+        $r  .= '  </div>' . "\n";
       }
-      $r .= '  ' . '<h3 class="tooltip-header">' . $th . '</h3>' . "\n";
-      $r .= '  <div id="tooltip-def-' . $tid . '">' . $tips[$tid]['tip'];
-      $r .= '  </div>' . "\n";
     }
     $r .= "</div>\n<!--eof tooltips -->\n";
+    unset($tid, $tips, $count);
     return $r;
   }
 
   public function clear() {
-    unset($this->src, $this->query, $this->used_tips);
+    unset($this->src, $this->query, $this->used_terms, $this->used_words);
   }
 }
 
