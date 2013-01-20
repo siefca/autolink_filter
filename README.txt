@@ -15,7 +15,7 @@ Adds a filter to automatically link known taxonomy terms.
 
 TODO:
 
-- fix interpolation when multiword term starts a sentence
+- disable synonyms when synonyms are disabled for a given vocabulary (global setting) - use join on vocabulary ID
 
 - test if main term is too long but its synonyms are ok
 - also test if tooltips are generated
@@ -26,10 +26,9 @@ TODO:
 - add an option for generating virtual terms with names containing all parent terms joint,
 - add an option for case insensitive matching,
 - add an option for case insensitive matching for first letter only,
-- add class exclusion support (e.g. elements that are enclosed with some class are not highlighted),
 - add an option to use tooltips field OR description,
 - add JS for tooltips,
-- reload html if overlaping terms are detected,
+
 - remove limits from sql if no values are present,
 - change DOM parser to faster.
 

@@ -336,7 +336,7 @@ class AutolinkFilterParser {
   private static $long_terms    = array();  // taxonomy long term ID-s database
   private static $tooltips      = array();  // taxonomy tooltips
   private static $taxonomy_sum  = '';       // taxonomy sum (for caching)
-  private static $chunk_size    = 28;       // number of taxonomy items to load and process at once
+  private static $chunk_size    = 32;       // number of taxonomy items to load and process at once
 
   function __construct($src, $vocs, $excluded_tags = '', $excluded_classes = '', $excluded_words = '', $min_length = 0,
                        $max_length = 0, $leaves_only = FALSE, $use_tooltips = TRUE, $selected_only = FALSE,
@@ -418,7 +418,7 @@ class AutolinkFilterParser {
     }
 
     if ($re_gen_words === NULL) {
-      $re_gen_words = '/(' . $re_gen_word_first_in_sentence. ')|(' . $re_letter . '+)/u';
+      $re_gen_words = '/(' . $re_gen_word_first_in_sentence. ')|(' . $re_letter . '+)/um';
     }
 
     if ($re_non_word === NULL) {
@@ -430,8 +430,8 @@ class AutolinkFilterParser {
     }
 
     // recalculate maximum and minimum lengths for patterns that "eat" one letter
-    $ucf_min_length  = $this->min_length - 1;
-    $ucf_max_length  = $this->max_length - 1;
+    $ucf_min_length = $this->min_length - 1;
+    $ucf_max_length = $this->max_length - 1;
     if ($ucf_min_length < 0) { $ucf_min_length = 0; }
     if ($ucf_max_length < 0) { $ucf_max_length = 0; }
 
@@ -441,11 +441,11 @@ class AutolinkFilterParser {
     $re_word_at_sentence_start  = '(' . $re_sentence_start  . '|' . $re_sentence_end . ')(' . $re_word_titlecase . ')';
 
     // regular expression exports
-    $this->re->words        = '/('   . $re_word_at_sentence_start . ')|(' . $re_word    . ')/u';  // words matcher
+    $this->re->words        = '/('   . $re_word_at_sentence_start . ')|(' . $re_word    . ')/um'; // words matcher
     $this->re->word_split   = '/'    . $re_non_word . '/u';                                       // word-splitter matcher
     $this->re->terms_before = '/('   . $re_term_prefix_uppercased . '(';                          // terms catcher before
     $this->re->terms_middle = '))|(('. $re_non_word . ')(';                                       // terms catcher second
-    $this->re->terms_after  = ')('   . $re_non_word .  '))/u';                                    // terms catcher final
+    $this->re->terms_after  = ')('   . $re_non_word .  '))/um';                                   // terms catcher final
   }
 
   private function &taxonomy() {
@@ -474,16 +474,25 @@ class AutolinkFilterParser {
   private function load_taxonomy() {
     $ckey = $this->taxonomy_generate_cache_key();
     if (array_key_exists($ckey, self::$taxonomy)) { return; }
+
     self::$taxonomy[$ckey]    = array();
     self::$tooltips[$ckey]    = array();
     self::$long_terms[$ckey]  = array();
+
+    if (empty($this->vocabularies)) { return; }
 
     // Query for taxonomy terms.
     $query = new EntityFieldQuery;
     $query
       ->entityCondition('entity_type', 'taxonomy_term')
-      ->propertyCondition('vid',  $this->vocabularies, 'IN')
-      ->propertyCondition('name', $this->excluded_words, 'NOT IN')
+      ->propertyCondition('vid',  $this->vocabularies, 'IN');
+
+    if (!empty($this->excluded_words)) {
+      $query
+        ->propertyCondition('name', $this->excluded_words, 'NOT IN');
+    }
+
+    $query
       ->propertyOrderBy('name')
       ->propertyOrderBy('weight')
       ->addMetaData('use_tooltips', TRUE)
@@ -537,7 +546,12 @@ class AutolinkFilterParser {
     $lt_chunked = array_chunk(self::$long_terms[$ckey], self::$chunk_size);
     foreach($lt_chunked as &$terms) {
       $ucterms = array();
-      foreach ($terms as $term) { $ucterms[] = $this->ucfirst($term); }
+      foreach ($terms as $term) {
+        $f    = drupal_substr($term, 0, 1);
+        $f_up = drupal_strtoupper($f);
+        if ($f !== $f_up) { $f = '[' . $f . $f_up . ']'; }
+        $ucterms[] = $f . drupal_substr($term, 1);
+      }
       $terms = array(join('|', $ucterms), join('|', $terms));
     }
     self::$long_terms[$ckey] = $lt_chunked;
