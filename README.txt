@@ -21,8 +21,10 @@ Adds a filter to automatically link known taxonomy terms from selected vovabular
 
 == TODO ==
 
-- disable synonyms when synonyms are disabled for a given vocabulary (global setting) - use join on vocabulary ID
-- add an option to use tooltips field OR description,
+- add an option for generating virtual terms with names containing all parent terms joint,
+- add an option for case insensitive matching,
+- add an option for case insensitive matching of first letter only,
+- change DOM parser to faster (that allows to memorize data in objects to shorten paths - cache misses and hits).
 
 Tests:
 
@@ -30,13 +32,7 @@ Tests:
 - also test if tooltips are generated
 - also test if tooltips aren't duplicated if terms are appearing more than one time
 
-- add an option for content type or content type / content field selection (e.g. 'articles only'),
-- add an option for generating virtual terms with names containing all parent terms joint,
-- add an option for case insensitive matching,
-- add an option for case insensitive matching of first letter only,
 - add JS for tooltips,
-
-- change DOM parser to faster.
 
 Tooltips:
 
@@ -45,7 +41,3 @@ Tooltips:
 - http://craigsworks.com/projects/qtip
 - http://bassistance.de/jquery-plugins/jquery-plugin-tooltip/  ***
 - http://craigsworks.com/projects/simpletip/#  **
-
-- bs: automatyczna bibliografia do newsa czy artykułu
-- bs: dodać RSS z polskimi (np. CERT, zaufana3strona) do kokpitu 
-
