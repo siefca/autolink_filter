@@ -50,11 +50,12 @@ function autolink_filter_filter_info() {
 */
 function _autolink_filter_processing_options_array() {
   return array(
-    'leaves_only'     => t('Only use terms that are the last children (leaves) of a taxonomy tree.'),
-    'selected_only'   => t('Only use terms that have <code>field_autolink</code> boolean field set.'),
-    'use_tooltips'    => t('Generate tooltips (uses <code>field_autolink_tooltip</code> text fields from taxonomy terms).'),
-    'use_description' => t('Use description field for tooltips when a tooltip field does not exist or is empty.'),
-    'use_synonyms'    => t('Use taxonomy synonyms if available.'),
+    'leaves_only'         => t('Only use terms that are the last children (leaves) of a taxonomy tree.'),
+    'selected_only'       => t('Only use terms that have <code>field_autolink</code> boolean field set.'),
+    'use_tooltips'        => t('Generate tooltips (uses <code>field_autolink_tooltip</code> text fields from taxonomy terms).'),
+    'use_description'     => t('Use description field for tooltips when a tooltip field does not exist or is empty.'),
+    'use_synonyms'        => t('Use taxonomy synonyms if available.'),
+    'use_virtual_synonyms'=> t('Use virtual synonyms created from all parent term names joined.'),
   );
 }
 
@@ -171,6 +172,11 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
 
 /**
  * Element validate callback for fields that contain lengths.
+ * 
+ * @param array $element form element
+ * @param array $form_state state of a form
+ * @param array $form form
+ * @return void
  */
 function _autolink_filter_length_validate($element, $form_state, $form) {
   if (!empty($element['#value']) && !is_numeric($element['#value'])) {
@@ -207,43 +213,50 @@ function _autolink_filter_length_validate($element, $form_state, $form) {
 
 /**
 * Filter process callback.
+* 
+* @param string $text text to process
+* @param mixed $filter filter object
+* @return string processed text
 */
 function _autolink_filter_process_filter($text, $filter) {
-  $s                  = $filter->settings;
-  $min                = $s['min'];
-  $max                = $s['max'];
-  $max_terms          = $s['max_terms'];
-  $max_words          = $s['max_words'];
-  $vocs               = $s['vocabularies'];
-  $excl_tags          = $s['excluded_tags'];
-  $excl_words         = $s['excluded_words'];
-  $excl_classes       = $s['excluded_classes'];
+  $s            = $filter->settings;
+  $min          = $s['min'];
+  $max          = $s['max'];
+  $max_terms    = $s['max_terms'];
+  $max_words    = $s['max_words'];
+  $vocs         = $s['vocabularies'];
+  $excl_tags    = $s['excluded_tags'];
+  $excl_words   = $s['excluded_words'];
+  $excl_classes = $s['excluded_classes'];
 
-  $processing_options = array_filter($filter->settings['processing_options']);
-  $leaves_only        = array_key_exists('leaves_only',     $processing_options);
-  $selected_only      = array_key_exists('selected_only',   $processing_options);
-  $use_tooltips       = array_key_exists('use_tooltips',    $processing_options);
-  $use_description    = array_key_exists('use_description', $processing_options);
-  $use_synonyms       = array_key_exists('use_synonyms',    $processing_options);
+  $processing_options   = array_filter($filter->settings['processing_options']);
+  $leaves_only          = array_key_exists('leaves_only',           $processing_options);
+  $selected_only        = array_key_exists('selected_only',         $processing_options);
+  $use_tooltips         = array_key_exists('use_tooltips',          $processing_options);
+  $use_description      = array_key_exists('use_description',       $processing_options);
+  $use_synonyms         = array_key_exists('use_synonyms',          $processing_options);
+  $use_virtual_synonyms = array_key_exists('use_virtual_synonyms',  $processing_options);
 
   if (!isset($vocs) || empty($vocs)) { return $text; }
-  if (!isset($excl_tags)    || empty($excl_tags))     { $excl_tags        = NULL; }
-  if (!isset($excl_words)   || empty($excl_words))    { $excl_words       = NULL; }
-  if (!isset($excl_classes) || empty($excl_classes))  { $excl_classes     = NULL; }
-  if (!isset($leaves_only))                           { $leaves_only      = NULL; }
-  if (!isset($selected_only))                         { $selected_only    = NULL; }
-  if (!isset($use_tooltips))                          { $use_tooltips     = NULL; }
-  if (!isset($use_description))                       { $use_description  = NULL; }
-  if (!isset($use_synonyms))                          { $use_synonyms     = NULL; }
+  
+  if (!isset($excl_tags)    || empty($excl_tags))     { $excl_tags            = NULL; }
+  if (!isset($excl_words)   || empty($excl_words))    { $excl_words           = NULL; }
+  if (!isset($excl_classes) || empty($excl_classes))  { $excl_classes         = NULL; }
+  if (!isset($leaves_only))                           { $leaves_only          = NULL; }
+  if (!isset($selected_only))                         { $selected_only        = NULL; }
+  if (!isset($use_tooltips))                          { $use_tooltips         = NULL; }
+  if (!isset($use_description))                       { $use_description      = NULL; }
+  if (!isset($use_synonyms))                          { $use_synonyms         = NULL; }
+  if (!isset($use_virtual_synonyms))                  { $use_virtual_synonyms = NULL; }
 
   if (!is_integer($max_terms))                        { settype($max_terms, 'integer'); }
   if (!is_integer($max_words))                        { settype($max_words, 'integer'); }
   if (!is_integer($min))                              { settype($min, 'integer'); }
   if (!is_integer($max))                              { settype($max, 'integer'); }
 
-  $parser = new AutolinkFilterParser($text, $vocs, $excl_tags, $excl_classes, $excl_words, $min, $max,
-                                     $leaves_only, $use_tooltips, $use_description, $selected_only, $use_synonyms,
-                                     $max_terms, $max_words);
+  $parser = new AutolinkFilterParser($text, $vocs,  $excl_tags, $excl_classes, $excl_words, $min, $max,
+                                     $leaves_only,  $use_tooltips, $use_description, $selected_only,
+                                     $use_synonyms, $use_virtual_synonyms, $max_terms, $max_words);
 
   $r = $parser->parse();
   $parser->clear();
@@ -254,6 +267,8 @@ function _autolink_filter_process_filter($text, $filter) {
 /**
 * Adds query autolink_sieve tag for filtering by explicite boolean marker
 * (if it's not 0 and not null).
+* 
+* @param QueryAlterableInterface $query select query object to alter
 */
 function autolink_filter_query_autolink_sieve_alter(QueryAlterableInterface $query) {
   $sieve_field = $query->getMetaData('sieve_field');
@@ -276,6 +291,8 @@ function autolink_filter_query_autolink_sieve_alter(QueryAlterableInterface $que
 
 /**
 * Adds query autolink_leaves tag for using the last children of taxonomy tree.
+* 
+* @param QueryAlterableInterface $query select query object to alter
 */
 function autolink_filter_query_autolink_leaves_alter(QueryAlterableInterface $query) {
   $tables =& $query->getTables();
@@ -288,6 +305,8 @@ function autolink_filter_query_autolink_leaves_alter(QueryAlterableInterface $qu
 
 /**
 * Adds query autolink_group_by_name tag for removing duplicated names when multiple matches occur.
+* 
+* @param QueryAlterableInterface $query select query object to alter
 */
 function autolink_filter_query_autolink_group_by_name_alter(QueryAlterableInterface $query) {
   $tables =& $query->getTables();
@@ -297,6 +316,8 @@ function autolink_filter_query_autolink_group_by_name_alter(QueryAlterableInterf
 
 /**
 * Adds query autolink_order_by_length tag for removing duplicated names when multiple matches occur.
+* 
+* @param QueryAlterableInterface $query select query object to alter
 */
 function autolink_filter_query_autolink_order_by_length_alter(QueryAlterableInterface $query) {
   $fn = _autolink_sql_length_clause($query);
@@ -315,19 +336,27 @@ function autolink_filter_query_autolink_order_by_length_alter(QueryAlterableInte
 
 /**
 * Adds query taxonomy_name_length tag for filtering out names that have unwanted lengths.
+* 
+* @param QueryAlterableInterface $query select query object to alter
 */
 function autolink_filter_query_taxonomy_name_length_alter(QueryAlterableInterface $query) {
   $fn = _autolink_sql_length_clause($query);
   $tables =& $query->getTables();
-  $tname = $tables['taxonomy_term_data']['alias'];
-  $min = $query->getMetaData('name_length_min');
-  $max = $query->getMetaData('name_length_max');
+  $tname  = $tables['taxonomy_term_data']['alias'];
+  $min    = $query->getMetaData('name_length_min');
+  $max    = $query->getMetaData('name_length_max');
   $query
     ->where($fn . '(' . $tname . '.name) >= ' . $min);
   $query
     ->where($fn . '(' . $tname . '.name) <= ' . $max);
 }
 
+/**
+* Generates proper SQL clause for testing length of a records.
+* 
+* @param mixed $query query object that have the 'connection' property, allowing to know the database type
+* @return string SQL command for testing lengths
+*/
 function _autolink_sql_length_clause($query) {
   static $fn = NULL;
   if ($fn === NULL) {
@@ -343,6 +372,13 @@ function autolink_filter_delete_all() {
   cache_clear_all('*', 'cache_filter');
 }
 
+/**
+ * Reads protected properties of PHP objects using reflection.
+ * 
+ * @param mixed $class tested class or object
+ * @param string $propertyName name of a property
+ * @return mixed property value
+ */
 function _autolink_filter_read_property($class, $propertyName)
 {
     $reflectedClass = new ReflectionClass($class);
@@ -355,69 +391,79 @@ function _autolink_filter_read_property($class, $propertyName)
 * Parser class
 */
 class AutolinkFilterParser {
-  private $src;               // source text
-  private $html;              // HTML DOM
-  private $min_length;        // minimal length of parsed word
-  private $max_length;        // maximal length of parsed word
-  private $leaves_only;       // use only taxonomy terms that are not parents of other terms
-  private $use_tooltips;      // use tooltips
-  private $use_description;   // use description when tooltip field is not available
-  private $selected_only;     // require field_autolink to be true
-  private $use_synonyms;      // uses synonyms
-  private $changed;           // internal change marker
-  private $used_terms;        // used term ID-s
-  private $used_words;        // used term names (including synonyms)
-  private $use_synonyms_real; // deduced ability to use synonyms
-  private $taxonomy_cache_key;// taxonomy cache key for current instance
-  private $callbacks;         // arrays for preg_replace method with callback method names
-  private $re;                // regular expression patterns
+  private $src;                   // source text
+  private $html;                  // HTML DOM
+  private $min_length;            // minimal length of parsed word
+  private $max_length;            // maximal length of parsed word
+  private $leaves_only;           // use only taxonomy terms that are not parents of other terms
+  private $use_tooltips;          // use tooltips
+  private $use_description;       // use description when tooltip field is not available
+  private $selected_only;         // require field_autolink to be true
+  private $use_synonyms;          // uses synonyms
+  private $changed;               // internal change marker
+  private $used_terms;            // used term ID-s
+  private $used_words;            // used term names (including synonyms)
+  private $use_synonyms_real;     // deduced ability to use synonyms
+  private $use_virtual_synonyms;  // use virtual synonyms
+  private $synonyms;              // synonyms storage (used by virtual synonyms)
+  private $taxonomy_cache_key;    // taxonomy cache key for current instance
+  private $taxonomy_hierarchy;    // taxonomy hierarchy
+  private $taxonomy_parents;      // taxonomy parents array
+  private $taxonomy_roots;        // taxonomy root elements (that have no parents)
+  private $callbacks;             // arrays for preg_replace method with callback method names
+  private $long_terms_re_counter; // counter for long terms
+  private $re;                    // regular expression patterns
 
-  private static $taxonomy      = array();  // taxonomies
-  private static $long_terms    = array();  // taxonomy long term ID-s database
-  private static $tooltips      = array();  // taxonomy tooltips
-  private static $taxonomy_sum  = '';       // taxonomy sum (for caching)
-  private static $chunk_size    = 32;       // number of taxonomy items to load and process at once
+  private static $taxonomy        = array();  // taxonomies
+  private static $long_terms_re   = array();  // taxonomy long term ID-s database
+  private static $term_data       = array();  // taxonomy reverse mapping (includes tooltips)
+  private static $virtual_regexes = array();  // regular expressions for virtual synonyms
+  private static $taxonomy_sum    = '';       // taxonomy sum (for caching)
+  private static $chunk_size      = 32;       // number of taxonomy items to load and process at once
 
   function __construct($src, $vocs, $excluded_tags = '', $excluded_classes = '', $excluded_words = '', $min_length = 0,
                        $max_length = 0, $leaves_only = FALSE, $use_tooltips = TRUE, $use_description = TRUE,
-                       $selected_only = FALSE, $use_synonyms = 1, $max_terms = 0, $max_words = 0) {
+                       $selected_only = FALSE, $use_synonyms = TRUE, $use_virtual_synonyms = FALSE,
+                       $max_terms = 0, $max_words = 0) {
 
-    if (is_null($vocs))             { $vocs = array();              }
-    if (is_null($excluded_tags))    { $excluded_tags    = array();  }
-    if (is_null($excluded_words))   { $excluded_words   = array();  }
-    if (is_null($excluded_classes)) { $excluded_classes = array();  }
-    if (is_null($leaves_only))      { $leaves_only      = FALSE;    }
-    if (is_null($selected_only))    { $selected_only    = FALSE;    }
-    if (is_null($use_tooltips))     { $use_tooltips     = FALSE;    }
-    if (is_null($use_description))  { $use_description  = FALSE;    }
-    if (is_null($use_synonyms))     { $use_synonyms     = FALSE;    }
+    if (is_null($vocs))                 { $vocs = array();                  }
+    if (is_null($excluded_tags))        { $excluded_tags        = array();  }
+    if (is_null($excluded_words))       { $excluded_words       = array();  }
+    if (is_null($excluded_classes))     { $excluded_classes     = array();  }
+    if (is_null($leaves_only))          { $leaves_only          = FALSE;    }
+    if (is_null($selected_only))        { $selected_only        = FALSE;    }
+    if (is_null($use_tooltips))         { $use_tooltips         = FALSE;    }
+    if (is_null($use_description))      { $use_description      = FALSE;    }
+    if (is_null($use_synonyms))         { $use_synonyms         = FALSE;    }
+    if (is_null($use_virtual_synonyms)) { $use_virtual_synonyms = FALSE;    }
 
     if (!is_numeric($min_length) || $min_length < 0) { $min_length = 0; }
     if (!is_numeric($max_length) || $max_length < 0) { $max_length = 0; }
     if (!is_numeric($max_terms)  || $max_terms  < 0) { $max_terms  = 0; }
     if (!is_numeric($max_words)  || $max_words  < 0) { $max_words  = 0; }
-    
+
     if ($min_length > 255) { $min_length = 255; }
     if ($max_length == 0 || $max_length > 255) { $max_length = 255; }
     if ($min_length > $max_length) { $min_length = $max_length; }
 
-    $this->src                = $src;
-    $this->vocabularies       = array();
-    $this->leaves_only        = $leaves_only;
-    $this->min_length         = $min_length;
-    $this->max_length         = $max_length;
-    $this->max_terms          = $max_terms;
-    $this->max_words          = $max_words;
+    $this->src                  = $src;
+    $this->vocabularies         = array();
+    $this->leaves_only          = $leaves_only;
+    $this->min_length           = $min_length;
+    $this->max_length           = $max_length;
+    $this->max_terms            = $max_terms;
+    $this->max_words            = $max_words;
     $this->initialize_regex();
 
-    $this->use_tooltips       = $use_tooltips;
-    $this->use_description    = $use_description;
-    $this->selected_only      = $selected_only;
-    $this->use_synonyms       = $use_synonyms;
-    $this->excluded_tags      = $this->extract_words_as_keys(drupal_strtolower($excluded_tags));
-    $this->excluded_words     = $this->extract_words($excluded_words, $this->min_length, $this->max_length);
-    $this->excluded_classes   = $this->extract_words_as_keys(drupal_strtolower($excluded_classes));
-    $this->use_synonyms_real  = ($this->use_synonyms && db_table_exists('field_data_synonyms_synonyms'));
+    $this->use_tooltips         = $use_tooltips;
+    $this->use_description      = $use_description;
+    $this->selected_only        = $selected_only;
+    $this->use_synonyms         = $use_synonyms;
+    $this->excluded_tags        = $this->extract_words_as_keys(drupal_strtolower($excluded_tags));
+    $this->excluded_words       = $this->extract_words($excluded_words, $this->min_length, $this->max_length);
+    $this->excluded_classes     = $this->extract_words_as_keys(drupal_strtolower($excluded_classes));
+    $this->use_synonyms_real    = ($this->use_synonyms && db_table_exists('field_data_synonyms_synonyms'));
+    $this->use_virtual_synonyms = $use_virtual_synonyms;
 
     $this->callbacks->parse_fragment = array(&$this, 'parse_fragment');
     $this->callbacks->parse_sentence = array(&$this, 'parse_sentence');
@@ -426,9 +472,16 @@ class AutolinkFilterParser {
       if ($name) { $this->vocabularies[] = $vid; }
     }
 
+    $this->taxonomy_hierarchy = array();
+    $this->taxonomy_parents = array();
+    $this->taxonomy_tree = array();
+    $this->synonyms = array();
     $this->load_taxonomy();
   }
 
+  /**
+   * Initializes common regular expression used by parser.
+   */
   private function initialize_regex() {
     static $re_full_stop          = NULL;                       // full-stop symbols
     static $re_sentence_end       = NULL;                       // end of a sentence
@@ -436,11 +489,11 @@ class AutolinkFilterParser {
     static $re_gen_words          = NULL;                       // generic words matcher
     static $re_non_word           = NULL;                       // non-word
     static $re_term_prefix_up     = NULL;                       // term-matching prefix (capital first letter)
+    static $re_space              = '[\p{Zs}\s]+';              // space or repeated spaces
     static $re_letter             = '[\pL\p{Pc}\p{Pd}\pN\/]';   // single word character
     static $re_letter_uppercase   = '\p{Lu}';                   // capital word character
     static $re_non_letter         = '[^\pL\p{Pc}\p{Pd}\pN\/]';  // single non-word character
-    static $re_sentence_start     = '^[\p{Zl}\p{Zp}\p{Zs}]*';   // beginning of a sentence
-    
+    static $re_sentence_start     = '^[\p{Zl}\p{Zp}\p{Zs}\s]*'; // beginning of a sentence
 
     if ($re_full_stop === NULL) {
       $re_full_stop = '[\x{00021}\x{0002E}\x{0003F}\x{00589}\x{0061F}\x{006D4}\x{00700}\x{00701}\x{00702}\x{007F9}' .
@@ -456,12 +509,22 @@ class AutolinkFilterParser {
     }
 
     // set complex static variables
-    if (is_null($re_sentence_end))      { $re_sentence_end      =        $re_full_stop        . '[\p{Zl}\p{Zp}\p{Zs}]+';      }
-    if (is_null($re_gen_word_opening))  { $re_gen_word_opening  =  '(' . $re_sentence_start   . '|' . $re_sentence_end . ')' .
-                                                                   '(' . $re_letter_uppercase .         $re_letter    . '*)'; }
-    if (is_null($re_gen_words))         { $re_gen_words         = '/(' . $re_gen_word_opening . ')|(' . $re_letter . '+)/um'; }
-    if (is_null($re_non_word))          { $re_non_word          =        $re_non_letter       . '+';                          }
-    if (is_null($re_term_prefix_up))    { $re_term_prefix_up    = '('  . $re_sentence_start   . '|' . $re_sentence_end . ')'; }
+    if (is_null($re_sentence_end)) { $re_sentence_end = $re_full_stop   . '[\p{Zl}\p{Zp}\p{Zs}\s]+'; }
+    if (is_null($re_non_word))     { $re_non_word     = $re_non_letter  . '+'; }
+
+    if (is_null($re_gen_word_opening)) {
+      $re_gen_word_opening  =  '(?:(' . $re_sentence_start . '|' . $re_sentence_end . ')' .
+                               '|(' . $re_non_word         . '))' .
+                               '(' . $re_letter_uppercase  . $re_letter . '*)';
+    }
+
+    if (is_null($re_gen_words)) {
+      $re_gen_words = '/(' . $re_gen_word_opening . ')(' . $re_letter . '+)('   . $re_non_word . ')/um';
+    }
+
+    if (is_null($re_term_prefix_up)) {
+      $re_term_prefix_up = '(?:(' . $re_sentence_start . '|' . $re_sentence_end . ')|(' . $re_non_word . '))';
+    }
 
     // recalculate maximum and minimum lengths for patterns that "eat" one letter
     $ucf_min_length = $this->min_length - 1;
@@ -475,33 +538,43 @@ class AutolinkFilterParser {
     $re_word_at_sentence_start  = '(' . $re_sentence_start          . '|' . $re_sentence_end   . ')(' . $re_word_titlecase . ')';
 
     // regular expression exports
-    $this->re->words        = '/('    . $re_word_at_sentence_start . ')|(' . $re_word  . ')/um'; // words matcher
-    $this->re->word_split   = '/'     . $re_non_word . '/u';                                     // word-splitter matcher
-    $this->re->terms_before = '/('    . $re_term_prefix_up . '(';                                // terms catcher before
-    $this->re->terms_middle = '))|((' . $re_non_word . ')(';                                     // terms catcher second
-    $this->re->terms_after  = ')('    . $re_non_word .  '))/um';                                 // terms catcher final
+    $this->re->words            = '/('    . $re_word_at_sentence_start . ')|(' . $re_word  . ')/um';  // words matcher
+    $this->re->word_split       = '/'     . $re_non_word        . '/u';       // word-splitter matcher
+    $this->re->terms_before     = '/'     . $re_term_prefix_up  . '(';        // terms catcher before
+    $this->re->terms_after      = ')($|'  . $re_non_word        . ')/um';     // terms catcher final
+    $this->re->space            = '/'     . $re_space           . '/um';      // space or repeated spaces
+    $this->re->vsym_begin       = '(?:'   . $re_space           . '(?:';      // virt. syn. beginning
+    $this->re->vsymset_begin    = '(?:';                                      // virt. synset beginning
+    $this->re->vsym_end         = '))?';                                      // virt. syn. end
+    $this->re->vsym_end_strict  = '))';                                       // virt. syn. end (strict)
+    $this->re->vsymset_end      = ')';                                        // virt. synset end
+    $this->re->space_char       = $re_space;                                  // space or repeated spaces
   }
 
   private function &taxonomy() {
     return self::$taxonomy[$this->taxonomy_cache_key];
   }
 
-  private function &long_terms() {
-    return self::$long_terms[$this->taxonomy_cache_key];
+  private function &long_terms_re() {
+    return self::$long_terms_re[$this->taxonomy_cache_key];
   }
 
-  private function &tooltips() {
-    return self::$tooltips[$this->taxonomy_cache_key];
+  private function &term_data() {
+    return self::$term_data[$this->taxonomy_cache_key];
+  }
+
+  private function &virtual_regexes() {
+    return self::$virtual_regexes[$this->taxonomy_cache_key];
   }
 
   private function taxonomy_generate_cache_key() {
     $this->taxonomy_cache_key =
-      '-' . $this->min_length    .
-      '-' . $this->max_length    .
-      '-' . $this->leaves_only   . '-' . $this->selected_only   .
-      '-' . $this->use_tooltips  . '-' . $this->use_description .
-      '-' . $this->use_synonyms_real  .
-      '-' . implode(':', $this->excluded_words) .
+      '-' . $this->min_length         .
+      '-' . $this->max_length         .
+      '-' . $this->leaves_only        . '-' . $this->selected_only        .
+      '-' . $this->use_tooltips       . '-' . $this->use_description      .
+      '-' . $this->use_synonyms_real  . '-' . $this->use_virtual_synonyms .
+      '-' . implode(':', $this->excluded_words)                           .
       '-' . implode(':', $this->vocabularies);
     return $this->taxonomy_cache_key;
   }
@@ -510,11 +583,14 @@ class AutolinkFilterParser {
     $ckey = $this->taxonomy_generate_cache_key();
     if (array_key_exists($ckey, self::$taxonomy)) { return; }
 
-    self::$taxonomy[$ckey]    = array();
-    self::$tooltips[$ckey]    = array();
-    self::$long_terms[$ckey]  = array();
+    self::$taxonomy[$ckey]      = array();
+    self::$term_data[$ckey]     = array();
+    self::$long_terms_re[$ckey] = array();
+
+    $this->long_terms_re_counter = 1;
 
     if (empty($this->vocabularies)) { return; }
+    if (!isset($this->synonyms)) { $this->synonyms = array(); }
 
     // Query for taxonomy terms.
     $query = new EntityFieldQuery;
@@ -539,10 +615,10 @@ class AutolinkFilterParser {
     $query
       ->addTag('autolink_order_by_length');
 
-    // Do not filter lengths and don't group by name when using synonyms,
+    // Do not filter by length and don't group by name when using synonyms,
     // but do it later when post-processing taxonomy entities. We don't want
     // synonyms to be dropped just because main term is not meeting certain criteria.
-    if (!$this->use_synonyms_real) {
+    if (!$this->use_synonyms_real && !$this->use_virtual_synonyms) {
       $query
         ->addMetaData('name_length_min', $this->min_length)
         ->addMetaData('name_length_max', $this->max_length)
@@ -556,26 +632,22 @@ class AutolinkFilterParser {
         ->addTag('autolink_sieve');
     }
 
-    if ($this->leaves_only) {
+    if ($this->leaves_only && !$this->use_virtual_synonyms) {
       $query
         ->addTag('autolink_leaves');
     }
 
     // Collect taxonomy terms.
-    $synonyms = array();
-    $needed_terms = array();
     $tterms = $query->execute();
+
     if (isset($tterms['taxonomy_term'])) {
       $tidgroups = array_chunk(array_keys($tterms['taxonomy_term']), self::$chunk_size); 
       foreach($tidgroups as $tids) {
         $terms = entity_load('taxonomy_term', $tids);
         foreach($terms as $term) {
           if (isset($term->name)) {
-            if ($this->use_synonyms_real) {
-              $synonyms = $this->extract_synonyms($term);
-              foreach($synonyms as $synonym_name) {      
-                $this->memorize_term_data($term, $synonym_name);
-              }
+            if ($this->use_synonyms_real || $this->use_virtual_synonyms) {
+              $this->memorize_synonyms($term);
             }
             $this->memorize_term_data($term);
           }
@@ -583,51 +655,222 @@ class AutolinkFilterParser {
       }
     }
 
-    // Create an array of regular expressions for matching terms that have many words.
-    $lt_chunked = array_chunk(self::$long_terms[$ckey], self::$chunk_size);
-    foreach($lt_chunked as &$terms) {
-      $ucterms = array();
-      foreach ($terms as $term) {
-        $f    = drupal_substr($term, 0, 1);
-        $f_up = drupal_strtoupper($f);
-        if ($f !== $f_up) { $f = '[' . $f . $f_up . ']'; }
-        $ucterms[] = $f . drupal_substr($term, 1);
-      }
-      $terms = array(join('|', $ucterms), join('|', $terms));
+    // Generate virtual synonyms.
+    if ($this->use_virtual_synonyms) {
+      $this->load_taxonomy_hierarchy();    
     }
-    self::$long_terms[$ckey] = $lt_chunked;
 
-    unset($lt_chunked, $ucterms);
-    unset($terms, $tterms, $synonyms, $synonym_name, $term, $query, $tip, $ckey, $tids, $name, $name_length, $tidgroups);
+    
+    // Create an array of regular expressions for matching terms that have many words.
+    $lt_chunked = array_chunk(self::$long_terms_re[$ckey], self::$chunk_size);
+    foreach ($lt_chunked as &$terms) {
+      $terms = join('|', $terms);
+    }
+    self::$long_terms_re[$ckey] = $lt_chunked;
+
+    unset($this->synonyms);
+    unset($lt_chunked, $ucterms, $qterms);
+    unset($terms, $tterms, $synonyms, $tdata, $synonym_name, $term, $query, $tip, $ckey, $tids, $name, $name_length, $tidgroups);
+  }
+
+  private function preg_make_term_name($name) {
+    $f    = drupal_substr($name, 0, 1);
+    $f_uc = drupal_strtoupper($f);
+    if ($f === $f_uc) {
+      return preg_quote($name, '/');
+    }
+    else {
+      return '[' . preg_quote($f . $f_uc, '/') . ']' . preg_quote(drupal_substr($name, 1), '/');
+    }
+  }
+
+  private function load_taxonomy_hierarchy() {
+    $query = db_select('taxonomy_term_data', 't');
+    $query->join('taxonomy_term_hierarchy', 'h', 'h.tid = t.tid');
+    $result = $query
+                ->fields('h', array('tid', 'parent'))
+                ->condition('t.vid', $this->vocabularies, 'IN')
+                ->execute();
+
+     if ( $result->rowCount() <= 0 ) { unset($result); return; }
+     $result = $result->fetchAll();
+
+     foreach($result as $term) {
+       if (isset($term->parent) && isset($term->tid)) {
+         $tid = $term->tid;
+         $par = $term->parent;
+         if ($term->parent != 0) {
+           $this->taxonomy_hierarchy[$tid] = $par;
+         }
+         else {
+           $this->taxonomy_roots[] = $tid;
+         }
+       }
+     }
+
+    foreach ($result as $term) {
+      $tid = $term->tid;
+      $par = $term->parent;
+      if (!array_key_exists($par, $this->taxonomy_parents)) {
+        $this->taxonomy_parents[$par] = array();
+      }
+      $this->taxonomy_parents[$par][] = $tid;
+    }
+
+    dpm($this->taxonomy_parents);
+
+    $virtual_regs = &$this->virtual_regexes();
+    foreach($this->taxonomy_roots as $id => $tid) {
+      if (array_key_exists($tid, $this->taxonomy_parents)) {
+        $r = $this->generate_vsym_regex($tid);
+        if (!empty($r)) { $virtual_regs[] = $r; }
+      }
+    }
+
+    unset($tid, $par, $term, $result, $query, $r);
+  }
+
+  /**
+  * Generates a regular expression for a given taxonomy subtree.
+  */
+  private function generate_vsym_regex($root, $level = 0, $total_length = 0) {
+    $acc = '';
+    $tdata = &$this->term_data();
+    $syns  = &$this->synonyms;
+    if (!array_key_exists($root, $tdata)) { return $acc; }
+
+    // add a condition for matching only roots ?
+
+    $names = array();
+    $name = $tdata[$root]->orig;
+    $l = drupal_strlen($name) + $total_length;
+    if ($l <= $this->max_length) { $names[] = $name; }
+    if (array_key_exists($root, $syns)) {
+      foreach($syns[$root] as $syn) {
+        $l = drupal_strlen($syn) + $total_length;
+        if ($l <= $this->max_length) { $names[] = $syn; }
+      }
+    }
+
+    if (empty($names)) { return ''; }    
+    foreach($names as &$name) {
+      $name = preg_replace('/ /', $this->re->space_char, preg_quote($name, '/'));
+    }
+    
+    // todo: first letter variants + optional beginning of the line
+    // uwaga: może być tak, że trzeba dla każdej pierwszej robić [Mm] (bo termin ma synonimy)
+    if ($level === 0) {
+      $acc = $this->re->vsymset_begin;
+      $first_name = array_shift($names);
+      $acc .= $first_name;
+      $acc .= (count($names) === 0) ? '' : '(?:' . implode('|', $names) . ')';
+      
+    }
+    else {
+      $acc  = $this->re->vsym_begin;
+      $acc .= (count($names) === 1) ? $names[0] : '(?:' . implode('|', $names) . ')';
+    }
+
+    if (array_key_exists($root, $this->taxonomy_parents)) {
+      $tmp = array();
+      if ($level < 255) {
+        foreach($this->taxonomy_parents[$root] as $branch) {
+          $tmp[] = $this->generate_vsym_regex($branch, $level + 1, $total_length + 1);
+        }
+      }
+      $acc .= implode('|', $tmp);
+      unset($tmp);
+    }
+
+    if ($level === 0) {
+      $acc .= $this->re->vsymset_end;
+    }
+    else {
+      $acc .= $this->leaves_only ? $this->re->vsym_end_strict : $this->re->vsym_end;
+    }
+
+    return $acc;
+  }
+  
+
+  #private function get_taxonomy_parents($tid, &$results = array(), $iterations = 0) {
+  #  array_push($results, $tid);
+  #  if (array_key_exists($tid, $this->taxonomy_parents) && $iterations < 255) {
+  #    $this->get_taxonomy_parents($this->taxonomy_parents[$tid], $results, $iterations + 1);
+  #  }
+  #  return $results;
+  #}
+
+  private function memorize_synonyms($term) {
+    $tid = $term->tid;
+    if (array_key_exists($tid, $this->synonyms)) { return; }
+    $syns = $this->extract_synonyms($term);
+    if (empty($syns)) { return; }
+    foreach($syns as $syn) {
+      $syn = preg_replace($this->re->space, ' ', $syn);
+      $l = drupal_strlen($syn);
+      if ($l > $this->max_length) { continue; }
+      if ($this->use_virtual_synonyms) {
+        if (!array_key_exists($tid, $this->synonyms)) {
+          $this->synonyms[$tid] = array();
+        }
+        $this->synonyms[$tid][] = $syn;
+      }
+      elseif ($l < $this->min_length) {
+        continue;
+      }
+      $this->memorize_term_data($term, $syn);
+    }
   }
 
   private function memorize_term_data($term, $use_name = FALSE) {
     $tax  = &$this->taxonomy();
-    $ltax = &$this->long_terms();
-    $tips = &$this->tooltips();
+    $ltax = &$this->long_terms_re();
+    $tdata = &$this->term_data();
 
     if ($use_name === FALSE) { $use_name = $term->name; }
-    if ($this->use_synonyms_real) {
+
+    // calculate lengths for data that couldn't be filtered on a database
+    if ($this->use_synonyms_real || $this->use_virtual_synonyms) {
       $l = drupal_strlen($use_name);
-      if ($l < $this->min_length || $l > $this->max_length) { return; }
-      if (array_key_exists($use_name, $tax)) { return; }
+      if (!$this->use_virtual_synonyms && $l < $this->min_length) { return; }
+      if ($l > $this->max_length) { return; }
+      $use_name = preg_replace($this->re->space, ' ', $use_name);
+      if (!$this->use_synonyms_real && array_key_exists($use_name, $tax)) { return; }
     }
+    else {
+      $use_name = preg_replace($this->re->space, ' ', $use_name);
+    }
+
+    // map term name to ID in taxonomy array
     $tax[$use_name] = $term->tid;
-    if (strpos($use_name, ' ')) { $ltax[] = $use_name; }
+
+    // memorize long term (containing spaces) in long_terms array
+    if (strpos($use_name, ' ') !== FALSE) {
+      $ltax[] = $this->preg_make_term_name($use_name);
+    }
+
+    // get tooltip text
     if ($this->use_tooltips) {
-      if (empty($term->autolink_tooltip) && $this->use_description) {
-        $tooltext = drupal_substr($term->description, 0, 255);
-      }
-      else {
-        $tooltext = $term->autolink_tooltip;
-      }
-      if (!empty($tooltext)) {
-        if (!array_key_exists($term->tid, $tips)) {
-          $tips[$term->tid] = array('tip' => $tooltext, 'name' => $this->ucfirst($term->name));
-        }
+     if (empty($term->autolink_tooltip) && $this->use_description) {
+       $tooltext = drupal_substr($term->description, 0, 255);
+     }
+     else {
+       $tooltext = $term->autolink_tooltip;
+     }
+    }
+
+    // update the term_data array if we're going to need some data indexed by term ID
+    if ($this->use_tooltips || $this->use_virtual_synonyms) {
+      if (!array_key_exists($term->tid, $tdata)) {
+        if ($this->use_tooltips) { $ent->tip  = $tooltext; }
+        $ent->term = $use_name;
+        $ent->orig = $term->name;
+        $tdata[$term->tid] = $ent;
       }
     }
-    unset($l, $term, $use_name, $orign, $tooltext, $tax, $ltax, $tips);
+
+    unset($l, $term, $use_name, $orign, $tooltext, $tax, $ltax, $tdata, $syns, $ent, $syn);
   }
 
   private function extract_synonyms($term) {
@@ -691,20 +934,18 @@ class AutolinkFilterParser {
 
   public function parse() {
     $tax  = &$this->taxonomy();
-    $ltax = &$this->long_terms();
+    $ltax = &$this->long_terms_re();
     $this->changed = FALSE;
     $this->used_terms = array();
     $this->used_words = array();
     $this->html = new simple_html_dom();
     $this->html->load($this->src, true, false);
-
+    
     // Step I - parse terms that have multiple words.
     foreach ($this->html->find('text') as $fragment) {
       if ($this->in_excluded_tag($fragment)) { continue; }
       foreach ($ltax as $terms_regex) {
-          $rgx = $this->re->terms_before . $terms_regex[0] .
-                 $this->re->terms_middle . $terms_regex[1] .
-                 $this->re->terms_after;
+          $rgx = $this->re->terms_before . $terms_regex . $this->re->terms_after;
           $fragment->innertext = preg_replace_callback($rgx, $this->callbacks->parse_sentence, $fragment->innertext);
         }
       }
@@ -735,10 +976,11 @@ class AutolinkFilterParser {
   private function parse_fragment($matches) {
     if (!isset($matches[0])) { return ''; }
     $tax  = &$this->taxonomy();
+    $orig = $matches[0];
     $word = '';
     $pref = '';
 
-    // upper-case word at the beginning of a sentence
+    // title-case word at the beginning of a sentence
     if (!empty($matches[3])) {
       $word = $matches[3];
       $pref = $matches[2];
@@ -746,46 +988,43 @@ class AutolinkFilterParser {
       if (array_key_exists($lc, $tax)) {
         return $pref . $this->generate_link($word, $lc);
       }
-    } //  word inside of a sentence
+    } // word inside of a sentence
     elseif (!empty($matches[4])) {
       $word = $matches[4];
     }
-    else { return $matches[0]; }
+    else {
+      return $orig;
+    }
 
     if (array_key_exists($word, $tax)) {
       return $pref . $this->generate_link($word);
     }
 
-    return $matches[0];
+    return $orig;
   }
 
   private function parse_sentence($matches) {
     if (!isset($matches[0])) { return ''; }
     $tax  = &$this->taxonomy();
-    //dpm($matches);
-    $pref = '';
-    $suff = '';
-    $word = '';
-    if (!empty($matches[6])) {
-      $pref = $matches[5];
-      $word = $matches[6];
-      $suff = $matches[7];
-    }
-    elseif (!empty($matches[3])) {
-      $pref = $matches[2];
-      $word = $matches[3];
-      $lc = $this->lcfirst($word);
-      if (array_key_exists($lc, $tax)) {
-        return $pref . $this->generate_link($word, $lc);
+    $orig = $matches[0];
+    $pref = $matches[1] . $matches[2];
+    $word = $matches[3];
+    $suff = $matches[4];
+    $term = NULL;
+
+    if (!array_key_exists($word, $tax)) {
+      if (!empty($matches[2])) {          // in the middle of a sentence
+        return $orig;
+      }
+      else {
+        $term = $this->change_first_case($word);
+        if (!array_key_exists($term, $tax)) {
+          return $orig;
+        }
       }
     }
-    else { return $matches[0]; }
 
-    if (array_key_exists($word, $tax)) {
-      return $pref . $this->generate_link($word) . $suff;
-    }
-
-    return $matches[0];
+    return $pref . $this->generate_link($word, $term) . $suff;
   }
 
   private function ucfirst($name) {
@@ -796,6 +1035,11 @@ class AutolinkFilterParser {
   private function lcfirst($name) {
     return drupal_strtolower(drupal_substr($name, 0, 1)) .
            drupal_substr($name, 1);
+  }
+
+  private function change_first_case($name) {
+    $fl = drupal_substr($name, 0, 1);
+    return ($fl == drupal_strtolower($fl)) ? $this->ucfirst($name) : $this->lcfirst($name);
   }
 
   private function generate_link($word, $orig = NULL) {
@@ -809,10 +1053,12 @@ class AutolinkFilterParser {
     if ($this->max_terms > 0 && $this->used_terms[$tid]  > $this->max_terms) { return $word; }    
     if ($this->max_words > 0 && $this->used_words[$orig] > $this->max_words) { return $word; }
 
-    $tips = &$this->tooltips();
+    $tips = &$this->term_data();
     $tiprefstring = '';
     if ($this->use_tooltips && array_key_exists($tid, $tips)) {
-      $tiprefstring = ' id="term-ref-' . $tid . '"';
+      if (!empty($tips[$tid]->tip)) {
+        $tiprefstring = ' id="term-ref-' . $tid . '"';
+      }
     }
 
     if (!$this->changed) { $this->changed = TRUE; }
@@ -822,22 +1068,38 @@ class AutolinkFilterParser {
   }
 
   private function generate_tooltips() {
-    $tips = &$this->tooltips();
+    $tips = &$this->term_data();
     $r  = "\n" . '<!-- tooltips -->' . "\n";
     $r .= '<div id="tooltips-container" style="display:none;">' . "\n";
     $r .= '<p>Tooltips:</p>' . "\n";
     foreach($this->used_terms as $tid => $count) {
       if (array_key_exists($tid, $tips)) {
         $tip = $tips[$tid];
-        $r  .= '<div id="term-def-' . $tid . '">';
-        $r  .= '<h3 class="term-name">' . $tip['name'] . '</h3>'  . "\n";
-        $r  .= '<div class="term-def">' . $tip['tip']  . '</div>' . "\n";
-        $r  .= '</div>' . "\n";
+        if (!empty($tip->tip)) {
+          $r  .= '<div id="term-def-' . $tid . '">';
+          $r  .= '<h3 class="term-name">' . $this->ucfirst($tip->orig) . '</h3>'  . "\n";
+          $r  .= '<div class="term-def">' . $tip->tip                  . '</div>' . "\n";
+          $r  .= '</div>' . "\n";
+        }
       }
     }
     $r .= "</div>\n<!--eof tooltips -->\n";
     unset($tid, $tips, $count);
     return $r;
+  }
+
+  private function cproduct($arrays, $i = 0) {
+      if (!isset($arrays[$i]))      { return array();     }
+      if ($i == count($arrays) - 1) { return $arrays[$i]; }
+
+      $tmp = cproduct($arrays, $i + 1);
+      $result = array();
+      foreach ($arrays[$i] as $v) {
+        foreach ($tmp as $t) {
+          $result[] = is_array($t) ? array_merge(array($v), $t) : array($v, $t);
+        }
+      }
+      return $result;
   }
 
   public function clear() {
