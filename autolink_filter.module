@@ -411,15 +411,13 @@ class AutolinkFilterParser {
   private $taxonomy_parents;      // taxonomy parents array
   private $taxonomy_roots;        // taxonomy root elements (that have no parents)
   private $callbacks;             // arrays for preg_replace method with callback method names
-  private $long_terms_re_counter; // counter for long terms
   private $re;                    // regular expression patterns
 
   private static $taxonomy        = array();  // taxonomies
   private static $long_terms_re   = array();  // taxonomy long term ID-s database
   private static $term_data       = array();  // taxonomy reverse mapping (includes tooltips)
   private static $virtual_regexes = array();  // regular expressions for virtual synonyms
-  private static $taxonomy_sum    = '';       // taxonomy sum (for caching)
-  private static $chunk_size      = 32;       // number of taxonomy items to load and process at once
+  private static $chunk_size      = 48;       // number of taxonomy items to load and process at once
 
   function __construct($src, $vocs, $excluded_tags = '', $excluded_classes = '', $excluded_words = '', $min_length = 0,
                        $max_length = 0, $leaves_only = FALSE, $use_tooltips = TRUE, $use_description = TRUE,
@@ -474,7 +472,6 @@ class AutolinkFilterParser {
 
     $this->taxonomy_hierarchy = array();
     $this->taxonomy_parents = array();
-    $this->taxonomy_tree = array();
     $this->synonyms = array();
     $this->load_taxonomy();
   }
@@ -513,9 +510,9 @@ class AutolinkFilterParser {
     if (is_null($re_non_word))     { $re_non_word     = $re_non_letter  . '+'; }
 
     if (is_null($re_gen_word_opening)) {
-      $re_gen_word_opening  =  '(?:(' . $re_sentence_start . '|' . $re_sentence_end . ')' .
-                               '|(' . $re_non_word         . '))' .
-                               '(' . $re_letter_uppercase  . $re_letter . '*)';
+      $re_gen_word_opening  =  '(?:(' . $re_sentence_start    . '|'         . $re_sentence_end . ')' .
+                               '|('   . $re_non_word          . '))'        .
+                               '('    . $re_letter_uppercase  . $re_letter  . '*)';
     }
 
     if (is_null($re_gen_words)) {
@@ -544,11 +541,13 @@ class AutolinkFilterParser {
     $this->re->terms_after      = ')($|'  . $re_non_word        . ')/um';     // terms catcher final
     $this->re->space            = '/'     . $re_space           . '/um';      // space or repeated spaces
     $this->re->vsym_begin       = '(?:'   . $re_space           . '(?:';      // virt. syn. beginning
-    $this->re->vsymset_begin    = '(?:';                                      // virt. synset beginning
+    $this->re->vsym_begin_first = ''      . $re_space           . '(?:';      // virt. syn. first beginning
     $this->re->vsym_end         = '))?';                                      // virt. syn. end
+    $this->re->vsym_end_first   = ')';                                        // virt. syn. end (first)
     $this->re->vsym_end_strict  = '))';                                       // virt. syn. end (strict)
-    $this->re->vsymset_end      = ')';                                        // virt. synset end
     $this->re->space_char       = $re_space;                                  // space or repeated spaces
+    $this->re->vsymset_begin    = $this->re->terms_before;                    // virt. synset beginning
+    $this->re->vsymset_end      = $this->re->terms_after;                     // virt. synset end
   }
 
   private function &taxonomy() {
@@ -586,8 +585,6 @@ class AutolinkFilterParser {
     self::$taxonomy[$ckey]      = array();
     self::$term_data[$ckey]     = array();
     self::$long_terms_re[$ckey] = array();
-
-    $this->long_terms_re_counter = 1;
 
     if (empty($this->vocabularies)) { return; }
     if (!isset($this->synonyms)) { $this->synonyms = array(); }
@@ -673,15 +670,16 @@ class AutolinkFilterParser {
     unset($terms, $tterms, $synonyms, $tdata, $synonym_name, $term, $query, $tip, $ckey, $tids, $name, $name_length, $tidgroups);
   }
 
-  private function preg_make_term_name($name) {
+  private function preg_make_term_name($name, $escape_spaces = TRUE) {
     $f    = drupal_substr($name, 0, 1);
     $f_uc = drupal_strtoupper($f);
     if ($f === $f_uc) {
-      return preg_quote($name, '/');
+      $name = preg_quote($name, '/');
     }
     else {
-      return '[' . preg_quote($f . $f_uc, '/') . ']' . preg_quote(drupal_substr($name, 1), '/');
+      $name = '[' . preg_quote($f . $f_uc, '/') . ']' . preg_quote(drupal_substr($name, 1));
     }
+    return $escape_spaces ? preg_replace('/ /', $this->re->space_char, $name) : $name;
   }
 
   private function load_taxonomy_hierarchy() {
@@ -697,6 +695,8 @@ class AutolinkFilterParser {
 
      foreach($result as $term) {
        if (isset($term->parent) && isset($term->tid)) {
+         settype($term->parent, "integer");
+         settype($term->tid, "integer");
          $tid = $term->tid;
          $par = $term->parent;
          if ($term->parent != 0) {
@@ -717,17 +717,94 @@ class AutolinkFilterParser {
       $this->taxonomy_parents[$par][] = $tid;
     }
 
-    dpm($this->taxonomy_parents);
-
     $virtual_regs = &$this->virtual_regexes();
     foreach($this->taxonomy_roots as $id => $tid) {
       if (array_key_exists($tid, $this->taxonomy_parents)) {
         $r = $this->generate_vsym_regex($tid);
-        if (!empty($r)) { $virtual_regs[] = $r; }
+        if (empty($r)) { continue; }
+        $virtual_regs[] = $r;
       }
     }
 
+    $this->inject_vsym_terms();
+
     unset($tid, $par, $term, $result, $query, $r);
+  }
+
+  private function inject_vsym_terms() {
+    $tdata = &$this->term_data();
+    $paths = $this->get_taxonomy_paths();
+
+    foreach ($tdata as $tid => $ent) {
+      if (array_key_exists($tid, $paths)) {
+        $path = array_reverse($paths[$tid]);
+        $result = array();
+        foreach($path as $ttid) {
+           if (array_key_exists($ttid, $tdata)) {
+             $names[] = $tdata[$ttid]->orig;
+             if (array_key_exists($ttid, $this->synonyms)) {
+               $names = array_merge($names, $this->synonyms[$ttid]);
+             }
+             $result[] = $names;
+             unset($names);
+           }
+        }
+        if (count($result) < 2) { continue; }
+        $result = $this->cproduct($result);
+        foreach ($result as $terms) {
+          $virtual_term->name = implode(' ', $terms);
+          $virtual_term->tid  = $ttid;
+          $this->memorize_term_data($virtual_term, FALSE, FALSE);
+        }
+        unset($result);
+      }
+    }
+    unset($paths);
+  }
+
+  /**
+  * Gets taxonomy paths for all terms that have at least one parent.
+  */
+  private function get_taxonomy_paths() {
+    $acc = array();
+    $tdata = &$this->term_data();
+    foreach ($tdata as $tid => $ent) {
+      $r = $this->get_taxonomy_parents($tid, $acc);
+      if (count($r) > 1) { $acc[$tid] = $r; }
+    }
+    unset($tdata, $tid, $ent);
+    return $acc;
+  }
+
+  /**
+  * Gets taxonomy paths (up to first parent) for a given term ID.
+  */
+  private function get_taxonomy_parents($tid, &$cache, &$results = array(), $iterations = 0) {
+    if (array_key_exists($tid, $cache)) {
+      //$results[] = "cache hit";
+      $results = array_merge($results, $cache[$tid]);
+    }
+    else {
+      $results[] = $tid;
+      $elements = count($results);
+      if (array_key_exists($tid, $this->taxonomy_hierarchy) && $iterations < 255) {
+        $this->get_taxonomy_parents($this->taxonomy_hierarchy[$tid], $cache, $results, $iterations + 1);
+      }
+      elseif ($elements > 1) {
+        $tmp = $results;
+        array_shift($tmp);
+        $elements--;
+        while($elements > 1) {
+          if (!array_key_exists($tmp[0], $cache)) {
+            $cache[$tmp[0]] = $tmp;
+          }
+          array_shift($tmp);
+          $elements--;
+        }
+        unset($tmp);
+      }
+    }
+    return $results;
   }
 
   /**
@@ -738,8 +815,6 @@ class AutolinkFilterParser {
     $tdata = &$this->term_data();
     $syns  = &$this->synonyms;
     if (!array_key_exists($root, $tdata)) { return $acc; }
-
-    // add a condition for matching only roots ?
 
     $names = array();
     $name = $tdata[$root]->orig;
@@ -752,24 +827,16 @@ class AutolinkFilterParser {
       }
     }
 
-    if (empty($names)) { return ''; }    
-    foreach($names as &$name) {
-      $name = preg_replace('/ /', $this->re->space_char, preg_quote($name, '/'));
-    }
-    
-    // todo: first letter variants + optional beginning of the line
-    // uwaga: może być tak, że trzeba dla każdej pierwszej robić [Mm] (bo termin ma synonimy)
+    $c = count($names);
+    if ($c <= 0) { return ''; }
     if ($level === 0) {
-      $acc = $this->re->vsymset_begin;
-      $first_name = array_shift($names);
-      $acc .= $first_name;
-      $acc .= (count($names) === 0) ? '' : '(?:' . implode('|', $names) . ')';
-      
+      foreach($names as &$name) { $name = $this->preg_make_term_name($name); }
     }
     else {
-      $acc  = $this->re->vsym_begin;
-      $acc .= (count($names) === 1) ? $names[0] : '(?:' . implode('|', $names) . ')';
+      $acc = ($level == 1) ? $this->re->vsym_begin_first : $this->re->vsym_begin;
+      foreach($names as &$name) { $name = preg_replace('/ /', $this->re->space_char, preg_quote($name, '/')); }
     }
+    $acc .= ($c == 1) ? $names[0] : '(?:' . implode('|', $names) . ')';
 
     if (array_key_exists($root, $this->taxonomy_parents)) {
       $tmp = array();
@@ -782,27 +849,18 @@ class AutolinkFilterParser {
       unset($tmp);
     }
 
-    if ($level === 0) {
-      $acc .= $this->re->vsymset_end;
+    if ($level == 1) {
+      $acc .= $this->re->vsym_end_first;
     }
-    else {
-      $acc .= $this->leaves_only ? $this->re->vsym_end_strict : $this->re->vsym_end;
+    elseif ($level != 0) {
+      $acc .= ($this->leaves_only) ? $this->re->vsym_end_strict : $this->re->vsym_end;
     }
 
     return $acc;
   }
-  
-
-  #private function get_taxonomy_parents($tid, &$results = array(), $iterations = 0) {
-  #  array_push($results, $tid);
-  #  if (array_key_exists($tid, $this->taxonomy_parents) && $iterations < 255) {
-  #    $this->get_taxonomy_parents($this->taxonomy_parents[$tid], $results, $iterations + 1);
-  #  }
-  #  return $results;
-  #}
 
   private function memorize_synonyms($term) {
-    $tid = $term->tid;
+    $tid = (integer) $term->tid;
     if (array_key_exists($tid, $this->synonyms)) { return; }
     $syns = $this->extract_synonyms($term);
     if (empty($syns)) { return; }
@@ -811,9 +869,9 @@ class AutolinkFilterParser {
       $l = drupal_strlen($syn);
       if ($l > $this->max_length) { continue; }
       if ($this->use_virtual_synonyms) {
-        if (!array_key_exists($tid, $this->synonyms)) {
-          $this->synonyms[$tid] = array();
-        }
+        #if (!array_key_exists($tid, $this->synonyms)) {
+        #  $this->synonyms[$tid] = array();
+        #}
         $this->synonyms[$tid][] = $syn;
       }
       elseif ($l < $this->min_length) {
@@ -823,9 +881,9 @@ class AutolinkFilterParser {
     }
   }
 
-  private function memorize_term_data($term, $use_name = FALSE) {
-    $tax  = &$this->taxonomy();
-    $ltax = &$this->long_terms_re();
+  private function memorize_term_data($term, $use_name = FALSE, $use_ltax = TRUE) {
+    $tax   = &$this->taxonomy();
+    $ltax  = &$this->long_terms_re();
     $tdata = &$this->term_data();
 
     if ($use_name === FALSE) { $use_name = $term->name; }
@@ -843,34 +901,32 @@ class AutolinkFilterParser {
     }
 
     // map term name to ID in taxonomy array
-    $tax[$use_name] = $term->tid;
+    $tax[$use_name] = (integer) $term->tid;
 
     // memorize long term (containing spaces) in long_terms array
-    if (strpos($use_name, ' ') !== FALSE) {
+    if ($use_ltax && strpos($use_name, ' ') !== FALSE) {
       $ltax[] = $this->preg_make_term_name($use_name);
-    }
-
-    // get tooltip text
-    if ($this->use_tooltips) {
-     if (empty($term->autolink_tooltip) && $this->use_description) {
-       $tooltext = drupal_substr($term->description, 0, 255);
-     }
-     else {
-       $tooltext = $term->autolink_tooltip;
-     }
     }
 
     // update the term_data array if we're going to need some data indexed by term ID
     if ($this->use_tooltips || $this->use_virtual_synonyms) {
       if (!array_key_exists($term->tid, $tdata)) {
-        if ($this->use_tooltips) { $ent->tip  = $tooltext; }
+        // get tooltip text
+        if ($this->use_tooltips) {
+          if (empty($term->autolink_tooltip) && $this->use_description) {
+             $ent->tip = drupal_substr($term->description, 0, 255);
+           }
+           else {
+             $ent->tip = $term->autolink_tooltip;
+           }
+        }
         $ent->term = $use_name;
         $ent->orig = $term->name;
         $tdata[$term->tid] = $ent;
       }
     }
 
-    unset($l, $term, $use_name, $orign, $tooltext, $tax, $ltax, $tdata, $syns, $ent, $syn);
+    unset($l, $term, $use_name, $orign, $tax, $ltax, $tdata, $syns, $ent, $syn);
   }
 
   private function extract_synonyms($term) {
@@ -935,20 +991,33 @@ class AutolinkFilterParser {
   public function parse() {
     $tax  = &$this->taxonomy();
     $ltax = &$this->long_terms_re();
+    $vtax = &$this->virtual_regexes();
     $this->changed = FALSE;
     $this->used_terms = array();
     $this->used_words = array();
     $this->html = new simple_html_dom();
     $this->html->load($this->src, true, false);
-    
+
+    // Step 0 - parse virtual synonyms.
+    if ($this->use_virtual_synonyms) {
+      foreach ($this->html->find('text') as $fragment) {
+        if ($this->in_excluded_tag($fragment)) { continue; }
+        foreach ($vtax as $terms_regex) {
+          $rgx = $this->re->vsymset_begin . $terms_regex . $this->re->vsymset_end;
+          $fragment->innertext = preg_replace_callback($rgx, $this->callbacks->parse_sentence, $fragment->innertext);
+        }
+      }
+      if ($this->changed) { $this->html->load($this->html->save()); }
+    }
+
     // Step I - parse terms that have multiple words.
     foreach ($this->html->find('text') as $fragment) {
       if ($this->in_excluded_tag($fragment)) { continue; }
       foreach ($ltax as $terms_regex) {
-          $rgx = $this->re->terms_before . $terms_regex . $this->re->terms_after;
-          $fragment->innertext = preg_replace_callback($rgx, $this->callbacks->parse_sentence, $fragment->innertext);
-        }
+        $rgx = $this->re->terms_before . $terms_regex . $this->re->terms_after;
+        $fragment->innertext = preg_replace_callback($rgx, $this->callbacks->parse_sentence, $fragment->innertext);
       }
+    }
 
     if ($this->changed) { $this->html->load($this->html->save()); }
 
@@ -1010,20 +1079,25 @@ class AutolinkFilterParser {
     $pref = $matches[1] . $matches[2];
     $word = $matches[3];
     $suff = $matches[4];
-    $term = NULL;
+    $term = $word;
 
-    if (!array_key_exists($word, $tax)) {
-      if (!empty($matches[2])) {          // in the middle of a sentence
+    if (!array_key_exists($term, $tax)) {
+      $term = preg_replace($this->re->space, ' ', $term);
+    }
+
+    if (!array_key_exists($term, $tax)) {
+      if (!empty($matches[2])) {         // in the middle of a sentence
         return $orig;
       }
       else {
-        $term = $this->change_first_case($word);
+        $term = $this->change_first_case($term);
         if (!array_key_exists($term, $tax)) {
           return $orig;
         }
       }
     }
 
+    if ($term !== $word) { $term = NULL; }
     return $pref . $this->generate_link($word, $term) . $suff;
   }
 
@@ -1063,7 +1137,7 @@ class AutolinkFilterParser {
 
     if (!$this->changed) { $this->changed = TRUE; }
 
-    return '<a href="' . url('taxonomy/term/' . $tid) . '" title="' . $orig . '" ' .
+    return '<a href="' . url('taxonomy/term/' . $tid) . '" title="' . $this->ucfirst($orig) . '" ' .
            'class="taxonomy-autolink"' . $tiprefstring . '>' . $word . '</a>';
   }
 
@@ -1092,7 +1166,7 @@ class AutolinkFilterParser {
       if (!isset($arrays[$i]))      { return array();     }
       if ($i == count($arrays) - 1) { return $arrays[$i]; }
 
-      $tmp = cproduct($arrays, $i + 1);
+      $tmp = $this->cproduct($arrays, $i + 1);
       $result = array();
       foreach ($arrays[$i] as $v) {
         foreach ($tmp as $t) {
@@ -1107,3 +1181,5 @@ class AutolinkFilterParser {
   }
 }
 
+//todo: leaves-only handling in virtual synonyms
+//todo: check if lengths are checked when adding virtual synonyms as terms

@@ -21,7 +21,8 @@ Adds a filter to automatically link known taxonomy terms from selected vovabular
 
 == TODO ==
 
-- add an option for generating virtual terms with names containing all parent terms joint,
+- take care of leaves filtering manually (dpm on load)
+
 - add an option for case insensitive matching,
 - add an option for case insensitive matching of first letter only,
 - change DOM parser to faster (that allows to memorize data in objects to shorten paths - cache misses and hits).
@@ -29,8 +30,6 @@ Adds a filter to automatically link known taxonomy terms from selected vovabular
 Tests:
 
 - test if main term is too long but its synonyms are ok
-- also test if tooltips are generated
-- also test if tooltips aren't duplicated if terms are appearing more than one time
 
 - add JS for tooltips,
 
