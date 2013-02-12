@@ -21,7 +21,7 @@ function autolink_filter_init() {
 * Implements hook_filter_info().
 */
 function autolink_filter_filter_info() {
-  static $excluded_tags    = 'a link pre h1 h2 h3 h4 h5 h6 h7 code pre address';
+  static $excluded_tags    = 'a link pre h1 h2 h3 h4 h5 h6 h7 code pre address object';
   static $excluded_classes = 'nolink caption';
   static $excluded_words   = 'or m of to too then when on off had been for were less i you he she it more and but no yes they';
   $filters = array();
@@ -35,7 +35,7 @@ function autolink_filter_filter_info() {
       'excluded_classes'=> $excluded_classes,
       'excluded_words'  => $excluded_words,
       'vocabularies'    => _autolink_filter_vocab_array(),
-      'processing_options' => array('use_tooltips', 'use_description', 'use_synonyms'),
+      'processing_options' => array('use_tooltips', 'use_description', 'use_synonyms', 'exclude_marked'),
       'max_terms'       => 4,
       'max_words'       => 1,
       'min'             => 2,
@@ -52,6 +52,7 @@ function _autolink_filter_processing_options_array() {
   return array(
     'leaves_only'         => t('Only use terms that are the last children (leaves) of a taxonomy tree.'),
     'selected_only'       => t('Only use terms that have <code>field_autolink</code> boolean field set.'),
+    'exclude_marked'      => t('Exclude terms that have <code>field_nolink</code> boolean field set.'),
     'use_tooltips'        => t('Generate tooltips (uses <code>field_autolink_tooltip</code> text fields from taxonomy terms).'),
     'use_description'     => t('Use description field for tooltips when a tooltip field does not exist or is empty.'),
     'use_synonyms'        => t('Use taxonomy synonyms if available.'),
@@ -118,7 +119,7 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
     ),
     'min'               => array(
       '#type'           => 'textfield',
-      '#title'          => t('Minimum length of a word'),
+      '#title'          => t('Minimum length of a term'),
       '#default_value'  => $filter->settings['min'],
       '#size'           => '3',
       '#maxlength'      => '4',
@@ -129,7 +130,7 @@ function _autolink_filter_settings($form, &$form_state, $filter, $format, $defau
     ),
       'max'             => array(
       '#type'           => 'textfield',
-      '#title'          => t('Maximum length of a word'),
+      '#title'          => t('Maximum length of a term'),
       '#default_value'  => $filter->settings['max'],
       '#size'           => '3',
       '#maxlength'      => '4',
@@ -232,6 +233,7 @@ function _autolink_filter_process_filter($text, $filter) {
   $processing_options   = array_filter($filter->settings['processing_options']);
   $leaves_only          = array_key_exists('leaves_only',           $processing_options);
   $selected_only        = array_key_exists('selected_only',         $processing_options);
+  $exclude_marked       = array_key_exists('exclude_marked',        $processing_options);
   $use_tooltips         = array_key_exists('use_tooltips',          $processing_options);
   $use_description      = array_key_exists('use_description',       $processing_options);
   $use_synonyms         = array_key_exists('use_synonyms',          $processing_options);
@@ -244,6 +246,7 @@ function _autolink_filter_process_filter($text, $filter) {
   if (!isset($excl_classes) || empty($excl_classes))  { $excl_classes         = NULL; }
   if (!isset($leaves_only))                           { $leaves_only          = NULL; }
   if (!isset($selected_only))                         { $selected_only        = NULL; }
+  if (!isset($exclude_marked))                        { $exclude_marked       = NULL; }
   if (!isset($use_tooltips))                          { $use_tooltips         = NULL; }
   if (!isset($use_description))                       { $use_description      = NULL; }
   if (!isset($use_synonyms))                          { $use_synonyms         = NULL; }
@@ -256,7 +259,7 @@ function _autolink_filter_process_filter($text, $filter) {
 
   $parser = new AutolinkFilterParser($text, $vocs,  $excl_tags, $excl_classes, $excl_words, $min, $max,
                                      $leaves_only,  $use_tooltips, $use_description, $selected_only,
-                                     $use_synonyms, $use_virtual_synonyms, $max_terms, $max_words);
+                                     $exclude_marked, $use_synonyms, $use_virtual_synonyms, $max_terms, $max_words);
 
   $r = $parser->parse();
   $parser->clear();
@@ -287,6 +290,31 @@ function autolink_filter_query_autolink_sieve_alter(QueryAlterableInterface $que
     ->isNotNull('enabled.' . $sieve_value_field);
   $query
     ->condition('enabled.' . $sieve_value_field, 0, '<>');
+}
+
+
+/**
+* Adds query autolink_rejector tag for filtering by explicite boolean marker
+* (if it's 1 and not null).
+* 
+* @param QueryAlterableInterface $query select query object to alter
+*/
+function autolink_filter_query_autolink_rejector_alter(QueryAlterableInterface $query) {
+  $rejector_field = $query->getMetaData('reject_field');
+  if ($rejector_field === NULL) { return; }
+  $rejector_table = 'field_data_' . $rejector_field;
+  if(!db_table_exists($rejector_table)) { return; }
+  $rejector_value_field = $rejector_field . '_value';
+  if(!db_field_exists($rejector_table, $rejector_value_field) || !db_field_exists($rejector_table, 'entity_id')) { return; }
+  $tables =& $query->getTables();
+  $query
+    ->join($rejector_table, 'rejected', 'rejected.entity_id = ' . $tables['taxonomy_term_data']['alias'] . '.tid');
+  $or = db_or()
+    ->isNull('rejected.' . $rejector_value_field)
+    ->condition('rejected.' . $rejector_value_field, 0, '=')
+    ->condition('rejected.' . $rejector_value_field, FALSE, '=');
+  $query
+    ->condition($or);
 }
 
 /**
@@ -399,6 +427,7 @@ class AutolinkFilterParser {
   private $use_tooltips;          // use tooltips
   private $use_description;       // use description when tooltip field is not available
   private $selected_only;         // require field_autolink to be true
+  private $exclude_marked;        // exclude terms that have field_nolink field set
   private $use_synonyms;          // uses synonyms
   private $changed;               // internal change marker
   private $used_terms;            // used term ID-s
@@ -421,7 +450,7 @@ class AutolinkFilterParser {
 
   function __construct($src, $vocs, $excluded_tags = '', $excluded_classes = '', $excluded_words = '', $min_length = 0,
                        $max_length = 0, $leaves_only = FALSE, $use_tooltips = TRUE, $use_description = TRUE,
-                       $selected_only = FALSE, $use_synonyms = TRUE, $use_virtual_synonyms = FALSE,
+                       $selected_only = FALSE, $exclude_marked = TRUE, $use_synonyms = TRUE, $use_virtual_synonyms = FALSE,
                        $max_terms = 0, $max_words = 0) {
 
     if (is_null($vocs))                 { $vocs = array();                  }
@@ -430,6 +459,7 @@ class AutolinkFilterParser {
     if (is_null($excluded_classes))     { $excluded_classes     = array();  }
     if (is_null($leaves_only))          { $leaves_only          = FALSE;    }
     if (is_null($selected_only))        { $selected_only        = FALSE;    }
+    if (is_null($exclude_marked))       { $exclude_marked       = FALSE;    }
     if (is_null($use_tooltips))         { $use_tooltips         = FALSE;    }
     if (is_null($use_description))      { $use_description      = FALSE;    }
     if (is_null($use_synonyms))         { $use_synonyms         = FALSE;    }
@@ -456,6 +486,7 @@ class AutolinkFilterParser {
     $this->use_tooltips         = $use_tooltips;
     $this->use_description      = $use_description;
     $this->selected_only        = $selected_only;
+    $this->exclude_marked       = $exclude_marked;
     $this->use_synonyms         = $use_synonyms;
     $this->excluded_tags        = $this->extract_words_as_keys(drupal_strtolower($excluded_tags));
     $this->excluded_words       = $this->extract_words($excluded_words, $this->min_length, $this->max_length);
@@ -571,8 +602,9 @@ class AutolinkFilterParser {
       '-' . $this->min_length         .
       '-' . $this->max_length         .
       '-' . $this->leaves_only        . '-' . $this->selected_only        .
-      '-' . $this->use_tooltips       . '-' . $this->use_description      .
-      '-' . $this->use_synonyms_real  . '-' . $this->use_virtual_synonyms .
+      '-' . $this->exclude_marked     . '-' . $this->use_tooltips         .
+      '-' . $this->use_description    . '-' . $this->use_synonyms_real    .
+      '-' . $this->use_virtual_synonyms                                   .
       '-' . implode(':', $this->excluded_words)                           .
       '-' . implode(':', $this->vocabularies);
     return $this->taxonomy_cache_key;
@@ -582,12 +614,16 @@ class AutolinkFilterParser {
     $ckey = $this->taxonomy_generate_cache_key();
     if (array_key_exists($ckey, self::$taxonomy)) { return; }
 
-    self::$taxonomy[$ckey]      = array();
-    self::$term_data[$ckey]     = array();
-    self::$long_terms_re[$ckey] = array();
+    self::$taxonomy[$ckey]          = array();
+    self::$term_data[$ckey]         = array();
+    self::$long_terms_re[$ckey]     = array();
 
     if (empty($this->vocabularies)) { return; }
     if (!isset($this->synonyms)) { $this->synonyms = array(); }
+
+    if ($this->use_virtual_synonyms) {
+      $this->load_taxonomy_hierarchy();
+    }
 
     // Query for taxonomy terms.
     $query = new EntityFieldQuery;
@@ -612,26 +648,34 @@ class AutolinkFilterParser {
     $query
       ->addTag('autolink_order_by_length');
 
-    // Do not filter by length and don't group by name when using synonyms,
-    // but do it later when post-processing taxonomy entities. We don't want
-    // synonyms to be dropped just because main term is not meeting certain criteria.
-    if (!$this->use_synonyms_real && !$this->use_virtual_synonyms) {
-      $query
-        ->addMetaData('name_length_min', $this->min_length)
-        ->addMetaData('name_length_max', $this->max_length)
-        ->addTag('taxonomy_name_length')
-        ->addTag('autolink_group_by_name');
-    }
+    if (!$this->use_virtual_synonyms) {
+      // Do not filter by length and don't group by name when using synonyms,
+      // but do it later when post-processing taxonomy entities. We don't want
+      // synonyms to be dropped just because main term is not meeting certain criteria.
+      if (!$this->use_synonyms_real) {
+        $query
+          ->addMetaData('name_length_min', $this->min_length)
+          ->addMetaData('name_length_max', $this->max_length)
+          ->addTag('taxonomy_name_length')
+          ->addTag('autolink_group_by_name');
+      }
+      
+      if ($this->selected_only) {
+        $query
+          ->addMetaData('sieve_field', 'field_autolink')
+          ->addTag('autolink_sieve');
+      }
 
-    if ($this->selected_only) {
-      $query
-        ->addMetaData('sieve_field', 'field_autolink')
-        ->addTag('autolink_sieve');
-    }
+      if ($this->exclude_marked) {
+        $query
+          ->addMetaData('reject_field', 'field_nolink')
+          ->addTag('autolink_rejector');
+      }
 
-    if ($this->leaves_only && !$this->use_virtual_synonyms) {
-      $query
-        ->addTag('autolink_leaves');
+      if ($this->leaves_only) {
+        $query
+          ->addTag('autolink_leaves');
+      }
     }
 
     // Collect taxonomy terms.
@@ -652,12 +696,13 @@ class AutolinkFilterParser {
       }
     }
 
-    // Generate virtual synonyms.
+    // Generate virtual synonyms and remove temporary & unwanted data structures.
     if ($this->use_virtual_synonyms) {
-      $this->load_taxonomy_hierarchy();    
+      $this->generate_vsym_regexes();
+      $this->inject_vsym_terms();
+      $this->remove_unwanted_terms();
     }
 
-    
     // Create an array of regular expressions for matching terms that have many words.
     $lt_chunked = array_chunk(self::$long_terms_re[$ckey], self::$chunk_size);
     foreach ($lt_chunked as &$terms) {
@@ -667,7 +712,27 @@ class AutolinkFilterParser {
 
     unset($this->synonyms);
     unset($lt_chunked, $ucterms, $qterms);
-    unset($terms, $tterms, $synonyms, $tdata, $synonym_name, $term, $query, $tip, $ckey, $tids, $name, $name_length, $tidgroups);
+    unset($terms, $tterms, $synonyms, $tdata, $synonym_name, $term, $query, $tip);
+    unset($ckey, $tids, $name, $name_length, $tidgroups);
+  }
+
+  private function remove_unwanted_terms() {
+    $tdata = &$this->term_data();
+    if ($this->selected_only || $this->exclude_marked) {
+      foreach($tdata as $tid => $term) {
+        if (!$term->show) {
+          unset($tdata[$tid]);
+        }
+      }
+    }
+    if ($this->leaves_only) {
+      foreach($tdata as $tid => $term) {
+        if (!$this->is_leaf($tid)) {
+          unset($tdata[$tid]);
+        }
+      }
+    }
+    unset($this->taxonomy_roots, $this->taxonomy_hierarchy, $this->taxonomy_parents);
   }
 
   private function preg_make_term_name($name, $escape_spaces = TRUE) {
@@ -693,6 +758,7 @@ class AutolinkFilterParser {
      if ( $result->rowCount() <= 0 ) { unset($result); return; }
      $result = $result->fetchAll();
 
+     // memorize taxonomy term hierarchy
      foreach($result as $term) {
        if (isset($term->parent) && isset($term->tid)) {
          settype($term->parent, "integer");
@@ -708,15 +774,16 @@ class AutolinkFilterParser {
        }
      }
 
+    // memorize taxonomy parents
     foreach ($result as $term) {
-      $tid = $term->tid;
-      $par = $term->parent;
-      if (!array_key_exists($par, $this->taxonomy_parents)) {
-        $this->taxonomy_parents[$par] = array();
-      }
-      $this->taxonomy_parents[$par][] = $tid;
+      $this->taxonomy_parents[$term->parent][] = $term->tid;
     }
 
+    unset($tid, $par, $term, $result, $query, $r);
+  }
+
+  private function generate_vsym_regexes() {
+    // generate regexes for virtual synonyms
     $virtual_regs = &$this->virtual_regexes();
     foreach($this->taxonomy_roots as $id => $tid) {
       if (array_key_exists($tid, $this->taxonomy_parents)) {
@@ -725,10 +792,6 @@ class AutolinkFilterParser {
         $virtual_regs[] = $r;
       }
     }
-
-    $this->inject_vsym_terms();
-
-    unset($tid, $par, $term, $result, $query, $r);
   }
 
   private function inject_vsym_terms() {
@@ -737,6 +800,7 @@ class AutolinkFilterParser {
 
     foreach ($tdata as $tid => $ent) {
       if (array_key_exists($tid, $paths)) {
+        if ($this->leaves_only && !$this->is_leaf($tid)) { continue; }
         $path = array_reverse($paths[$tid]);
         $result = array();
         foreach($path as $ttid) {
@@ -752,14 +816,22 @@ class AutolinkFilterParser {
         if (count($result) < 2) { continue; }
         $result = $this->cproduct($result);
         foreach ($result as $terms) {
-          $virtual_term->name = implode(' ', $terms);
-          $virtual_term->tid  = $ttid;
+          $virtual_term           = $tdata[$ttid];
+          $virtual_term->tid      = $ttid;
+          $virtual_term->name     = implode(' ', $terms);
           $this->memorize_term_data($virtual_term, FALSE, FALSE);
         }
         unset($result);
       }
     }
     unset($paths);
+  }
+
+  /**
+  * Returns TRUE if the given taxonomy term is a leaf (doesn't have any child nodes).
+  */
+  private function is_leaf($tid) {
+    return !array_key_exists($tid, $this->taxonomy_parents);
   }
 
   /**
@@ -811,9 +883,9 @@ class AutolinkFilterParser {
   * Generates a regular expression for a given taxonomy subtree.
   */
   private function generate_vsym_regex($root, $level = 0, $total_length = 0) {
-    $acc = '';
-    $tdata = &$this->term_data();
-    $syns  = &$this->synonyms;
+    $acc      = '';
+    $tdata    = &$this->term_data();
+    $syns     = &$this->synonyms;
     if (!array_key_exists($root, $tdata)) { return $acc; }
 
     $names = array();
@@ -869,9 +941,6 @@ class AutolinkFilterParser {
       $l = drupal_strlen($syn);
       if ($l > $this->max_length) { continue; }
       if ($this->use_virtual_synonyms) {
-        #if (!array_key_exists($tid, $this->synonyms)) {
-        #  $this->synonyms[$tid] = array();
-        #}
         $this->synonyms[$tid][] = $syn;
       }
       elseif ($l < $this->min_length) {
@@ -891,21 +960,32 @@ class AutolinkFilterParser {
     // calculate lengths for data that couldn't be filtered on a database
     if ($this->use_synonyms_real || $this->use_virtual_synonyms) {
       $l = drupal_strlen($use_name);
-      if (!$this->use_virtual_synonyms && $l < $this->min_length) { return; }
       if ($l > $this->max_length) { return; }
-      $use_name = preg_replace($this->re->space, ' ', $use_name);
-      if (!$this->use_synonyms_real && array_key_exists($use_name, $tax)) { return; }
+      if (!$this->use_virtual_synonyms || !$use_ltax) {
+        if ($l < $this->min_length) { return; }
+        $use_name = preg_replace($this->re->space, ' ', $use_name);
+        if (array_key_exists($use_name, $tax)) { return; }
+      }
     }
     else {
       $use_name = preg_replace($this->re->space, ' ', $use_name);
     }
 
-    // map term name to ID in taxonomy array
-    $tax[$use_name] = (integer) $term->tid;
+    $addtotax = TRUE;
+    if ($this->use_virtual_synonyms) {
+      $ent->show = $this->extract_sieve($term);
+      if ($this->selected_only || $this->exclude_marked) { $addtotax = $ent->show; }
+      if ($addtotax && $this->leaves_only) { $addtotax = $this->is_leaf($term->tid); }
+    }
 
-    // memorize long term (containing spaces) in long_terms array
-    if ($use_ltax && strpos($use_name, ' ') !== FALSE) {
-      $ltax[] = $this->preg_make_term_name($use_name);
+    if ($addtotax) {
+      // memorize long term (containing spaces) in long_terms array
+      if ($use_ltax && strpos($use_name, ' ') !== FALSE) {
+        $ltax[] = $this->preg_make_term_name($use_name);
+      }
+      
+      // map term name to ID in taxonomy array
+      $tax[$use_name] = (integer) $term->tid;
     }
 
     // update the term_data array if we're going to need some data indexed by term ID
@@ -913,12 +993,10 @@ class AutolinkFilterParser {
       if (!array_key_exists($term->tid, $tdata)) {
         // get tooltip text
         if ($this->use_tooltips) {
-          if (empty($term->autolink_tooltip) && $this->use_description) {
-             $ent->tip = drupal_substr($term->description, 0, 255);
-           }
-           else {
-             $ent->tip = $term->autolink_tooltip;
-           }
+          $ent->tooltip = $this->extract_tooltip($term);
+          if (empty($ent->tooltip)) {
+            $ent->tooltip = $this->use_description ? drupal_substr($term->description, 0, 255) : '';
+          }
         }
         $ent->term = $use_name;
         $ent->orig = $term->name;
@@ -943,6 +1021,22 @@ class AutolinkFilterParser {
       }
     }
     return $r;
+  }
+
+  private function extract_sieve($term) {
+    if (property_exists($term, 'show')) { return $term->show; }
+    if ($this->selected_only) {
+      $accept = isset($term->field_autolink['und'][0]['value']) ? $term->field_autolink['und'][0]['value'] : FALSE;
+    } else { $accept = TRUE; }
+    if ($this->exclude_marked) {
+      $reject = isset($term->field_nolink['und'][0]['value'])   ? $term->field_nolink['und'][0]['value']   : FALSE;
+    } else { $reject = FALSE; }
+    return ($accept && !$reject); 
+  }
+
+  private function extract_tooltip($term) {
+    if (property_exists($term, 'tooltip')) { return $term->tooltip; }
+    return isset($term->field_autolink_tooltip['und'][0]['value']) ? $term->field_autolink_tooltip['und'][0]['value'] : NULL;
   }
 
   private function extract_words($text, $minlength = 0, $maxlength = 0) {
@@ -1097,7 +1191,7 @@ class AutolinkFilterParser {
       }
     }
 
-    if ($term !== $word) { $term = NULL; }
+    if ($term == $word) { $term = NULL; }
     return $pref . $this->generate_link($word, $term) . $suff;
   }
 
@@ -1123,14 +1217,14 @@ class AutolinkFilterParser {
 
     $this->used_terms[$tid]  = !array_key_exists($tid,  $this->used_terms) ? 1 : $this->used_terms[$tid]  + 1;
     $this->used_words[$orig] = !array_key_exists($orig, $this->used_words) ? 1 : $this->used_words[$orig] + 1;
-    
+
     if ($this->max_terms > 0 && $this->used_terms[$tid]  > $this->max_terms) { return $word; }    
     if ($this->max_words > 0 && $this->used_words[$orig] > $this->max_words) { return $word; }
 
     $tips = &$this->term_data();
     $tiprefstring = '';
     if ($this->use_tooltips && array_key_exists($tid, $tips)) {
-      if (!empty($tips[$tid]->tip)) {
+      if (!empty($tips[$tid]->tooltip)) {
         $tiprefstring = ' id="term-ref-' . $tid . '"';
       }
     }
@@ -1149,10 +1243,10 @@ class AutolinkFilterParser {
     foreach($this->used_terms as $tid => $count) {
       if (array_key_exists($tid, $tips)) {
         $tip = $tips[$tid];
-        if (!empty($tip->tip)) {
+        if (!empty($tip->tooltip)) {
           $r  .= '<div id="term-def-' . $tid . '">';
-          $r  .= '<h3 class="term-name">' . $this->ucfirst($tip->orig) . '</h3>'  . "\n";
-          $r  .= '<div class="term-def">' . $tip->tip                  . '</div>' . "\n";
+          $r  .= '<h3 class="term-name">' . $this->ucfirst($tip->orig)  . '</h3>'  . "\n";
+          $r  .= '<div class="term-def">' . $tip->tooltip               . '</div>' . "\n";
           $r  .= '</div>' . "\n";
         }
       }
@@ -1181,5 +1275,3 @@ class AutolinkFilterParser {
   }
 }
 
-//todo: leaves-only handling in virtual synonyms
-//todo: check if lengths are checked when adding virtual synonyms as terms
