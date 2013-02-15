@@ -1040,6 +1040,7 @@ class AutolinkFilterParser {
   }
 
   private function extract_words($text, $minlength = 0, $maxlength = 0) {
+    if (empty($text)) { return array(); }
     if (($minlength + $maxlength) === 0) {
       return array_filter(preg_split($this->re->word_split, $text));
     }
@@ -1086,14 +1087,16 @@ class AutolinkFilterParser {
     $tax  = &$this->taxonomy();
     $ltax = &$this->long_terms_re();
     $vtax = &$this->virtual_regexes();
-    $this->changed = FALSE;
     $this->used_terms = array();
     $this->used_words = array();
     $this->html = new simple_html_dom();
     $this->html->load($this->src, true, false);
 
+    $this->changed = FALSE;
+    $something_changed = FALSE;
+
     // Step 0 - parse virtual synonyms.
-    if ($this->use_virtual_synonyms) {
+    if ($this->use_virtual_synonyms && !empty($vtax)) {
       foreach ($this->html->find('text') as $fragment) {
         if ($this->in_excluded_tag($fragment)) { continue; }
         foreach ($vtax as $terms_regex) {
@@ -1101,19 +1104,29 @@ class AutolinkFilterParser {
           $fragment->innertext = preg_replace_callback($rgx, $this->callbacks->parse_sentence, $fragment->innertext);
         }
       }
-      if ($this->changed) { $this->html->load($this->html->save()); }
-    }
-
-    // Step I - parse terms that have multiple words.
-    foreach ($this->html->find('text') as $fragment) {
-      if ($this->in_excluded_tag($fragment)) { continue; }
-      foreach ($ltax as $terms_regex) {
-        $rgx = $this->re->terms_before . $terms_regex . $this->re->terms_after;
-        $fragment->innertext = preg_replace_callback($rgx, $this->callbacks->parse_sentence, $fragment->innertext);
+      if ($this->changed) {
+        $this->html->load($this->html->save());
+        $something_changed = TRUE;
+        $this->changed = FALSE;
       }
     }
 
-    if ($this->changed) { $this->html->load($this->html->save()); }
+    // Step I - parse terms that have multiple words.
+    if (!empty($ltax)) {
+      foreach ($this->html->find('text') as $fragment) {
+        if ($this->in_excluded_tag($fragment)) { continue; }
+        foreach ($ltax as $terms_regex) {
+          $rgx = $this->re->terms_before . $terms_regex . $this->re->terms_after;
+          $fragment->innertext = preg_replace_callback($rgx, $this->callbacks->parse_sentence, $fragment->innertext);
+        }
+      }
+    }
+
+    if ($this->changed) {
+      $this->html->load($this->html->save());
+      $something_changed = TRUE;
+      $this->changed = FALSE;
+    }
 
     // Step II - parse terms that are single words.
     foreach ($this->html->find('text') as $fragment) {
@@ -1122,8 +1135,13 @@ class AutolinkFilterParser {
       }
     }
 
-    // Step III - generate tooltips.
     if ($this->changed) {
+      $something_changed = TRUE;
+      $this->changed = FALSE;
+    }
+
+    // Step III - generate tooltips.
+    if ($something_changed) {
       $ttips = $this->use_tooltips ? $this->generate_tooltips() : '';
       $out = $this->html->outertext . $ttips;
       unset($ttips);
@@ -1229,10 +1247,11 @@ class AutolinkFilterParser {
       }
     }
 
-    if (!$this->changed) { $this->changed = TRUE; }
-
-    return '<a href="' . url('taxonomy/term/' . $tid) . '" title="' . $this->ucfirst($orig) . '" ' .
+    $this->changed = TRUE;
+    $r = '<a href="' . url('taxonomy/term/' . $tid) . '" title="' . $this->ucfirst($orig) . '" ' .
            'class="taxonomy-autolink"' . $tiprefstring . '>' . $word . '</a>';
+
+    return $r;
   }
 
   private function generate_tooltips() {
